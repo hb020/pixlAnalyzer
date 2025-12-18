@@ -2,7 +2,7 @@
 
 Simple 2.4GHz Spectrum Analyzer based on the nRF52832 in the PixlJs allmiibo emulator
 
-This Firmware is currently compatible with the LCD and OLED variant you can get on Aliexpress for around 10-15€ it will make it a very simple battery powered 2400 - 2487MHz Spectrum Analyzer with a Waterfal like history show with little options.
+This Firmware is currently compatible with the LCD and OLED variant you can get on Aliexpress for around 10-15€ it will make it a very simple battery powered 2400 - 2487MHz Spectrum Analyzer with a Waterfall like history show with little options.
 
 ![Image](AnalyzerDemo.jpg)
 
@@ -37,3 +37,7 @@ The gcc-arm-none-eabi path needs to be set in the Makefile.windows in the SDK fo
 Credit goes to this repo for the codebase and pinout etc.:
 
 https://github.com/solosky/pixl.js/
+
+## Future Work / Ideas
+
+See [ideas](ideas.md) for more details.

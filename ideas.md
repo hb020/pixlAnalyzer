@@ -1,4 +1,4 @@
-# Investigation of functionality expansion
+# Ideas for future work on the pixlAnalyzer
 
 radio chip: nrf52832
 
@@ -8,7 +8,7 @@ Right now it only measures RSSI for spectrum analysis, on the range of 2400-2487
 
 This functionality can be expanded in several ways:
 1. **Frequency range visualisation**: Give visual clues of the type of bands that exist.  
-2. **Signal identification**: Implement decoding for common protocols like Bluetooth Low Energy (BLE), IEEE 802.15.4 (Zigbee, Thread,..), or Wi-Fi. This would allow the device to not only detect signals but also interpret the data being transmitted.
+2. **Signal identification**: Implement decoding for common protocols like Bluetooth Low Energy (BLE), IEEE 802.15.4 (Zigbee, Thread,..), or Wi-Fi. This would allow the device to not only detect signals but also identify the data being transmitted.
 
 ## Frequency range visualisation
 
