@@ -28,9 +28,14 @@ To Go back to the Pixl.js firmware you can open the menu by pressing the middle 
 ## Compiling
 
 Its made to be used with Windows right now some changes will be needed to make it Linux compatible.
-You need to have make and gcc-arm-none-eabi installed and working.
+You need to have installed:
 
-The gcc-arm-none-eabi path needs to be set in the Makefile.windows in the SDK folder (search for it)
+* `make`
+* `gcc-arm-none-eabi`
+  * set the path to the gcc's bin folder in the `/pixlAnalyzer/firmware/sdk/components/toolchain/gcc/Makefile.posix` or ...`Makefile.windows` file, depending on your OS.
+  * example for MacOS: `GNU_INSTALL_ROOT ?= /Applications/ArmGNUToolchain/14.2.rel1/arm-none-eabi/bin/`
+* `nrfutil`
+  * unless you have a very old version (that is, 6.x or lower), you will also need to run `nrfutil install nrf5sdk-tools` after installation of nrfutil.
 
 ## Credits
 
