@@ -16,6 +16,16 @@ Find them on Aliexpress as example here:
 https://aliexpress.com/item/1005008726926205.html
 
 
+## Version history
+
+2025-12-06: first release
+
+2026-01-xx (WIP):
+
+* button debouncing
+* LCD contrast adjustment made possible via menu
+* long press (5 seconds) to enter sleep mode
+
 ## Flashing
 
 You can flash this firmware fully OTA and go back to the stock Pixl.js firmware as well.

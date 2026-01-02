@@ -12,12 +12,10 @@ This functionality can be expanded in several ways:
 1. **Frequency range visualisation**: Give visual clues of the type of bands that exist.  
 2. **Signal identification**: Implement decoding for common protocols like Bluetooth Low Energy (BLE), IEEE 802.15.4 (Zigbee, Thread,..), or Wi-Fi. This would allow the device to not only detect signals but also identify the data being transmitted.
 
-Some shortcomings that can be improved:
+Some shortcomings that can be improved (and have not been done yet):
 
-1. debounce the buttons better (DONE)
-2. LCD contrast adjustment (DONE, but for now only 181 writes can be done before a full erase cycle is needed)
-3. better voltage calibration. On my OLED based device: 2.4V becomes 2.5V on screen, and 4V becomes 4.15V on screen.
-4. allow removing the speed indicator top left, it is not very useful outside of dev use.
+1. better voltage calibration. On my OLED based device: 2.4V becomes 2.5V on screen, and 4V becomes 4.15V on screen.
+2. allow removing the speed indicator top left, it is not very useful outside of dev use.
 
 And why not move to the latest SDK version while at it?
 

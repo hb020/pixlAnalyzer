@@ -449,23 +449,33 @@ uint32_t get_time_ms(void);
 
 /** 
  * @brief Detect if the mid button is pressed.
- * If `raw` is False, it will only return True on the transition from not pressed to pressed (button press event).
- * It will use debouncing logic in that case.
+ * If `detection_mode` is 0, it will only return True on the transition from not pressed to pressed (button press event).
+ * If `detection_mode` is 1, it will return True if the button has been held down (but do not detect length).
+ * If `detection_mode` is 2, it will return True if the button has been held down for more than 5 seconds.
+ * If `detection_mode` < 0: reset internal counters
+ * All use debouncing.
  * 
- * @param raw set to True to get the raw button state, False to get debounced leading edge only
+ * @param detection_mode 0 to get debounced leading edge only, 1 to get the raw button state, 2 to see if the button is held since a long time (5 seconds)
  * @return True if button was pressed, False otherwise
  **/
-bool btn_mid(bool raw) 
+bool btn_mid(int detection_mode) 
 {
     static bool previous_state = false;
+    static bool edge_detected = false;
+    static uint32_t last_press = 0;
 
     bool raw_state = (nrf_gpio_pin_read(PIN_BTN_MID) == 0); // active low
-    if (raw)
+
+    if (detection_mode < 0)
     {
-        previous_state = raw_state; // keep previous state for next call, that may need debounce
-        return raw_state;
+        // reset internal variables
+        previous_state = raw_state; // this makes sure that next call will not detect edge
+        edge_detected = false;
+        last_press = 0;
+        return false;
     }
 
+    // debounce logic
     if (raw_state != previous_state)
     {        
         nrf_delay_ms(10); // Debounce delay
@@ -473,14 +483,39 @@ bool btn_mid(bool raw)
         if (raw_state != previous_state)
         {
             previous_state = raw_state;
-            if (raw_state)
+            if (raw_state && (detection_mode != 1)) // skip edge detection if in raw mode
             {
-                return true; // Button was just pressed
+                // button just pressed
+                last_press = get_time_ms(); // store edge time
+                edge_detected = true;
             }
         }
     }
-    return false; // Button not pressed or still pressed
+    if (raw_state) // pressed
+    {
+        if ((detection_mode == 0) && edge_detected) 
+        {
+            edge_detected = false; // reset edge detection
+            return true; // Button was just pressed
+        }
+        uint32_t now = get_time_ms();
+        if (last_press == 0)
+            last_press = now; // should not happen, but just in case        
+        if (detection_mode == 2)
+        {
+            if ((now - last_press) >= 5000) // 5 seconds hold
+            {
+                last_press = now; // prevent multiple triggers
+                return true; // Long press detected
+            }
+        }
+    }
+    if (detection_mode == 1) 
+        return raw_state;
+    else 
+        return false; // Button not pressed or still pressed, but not long enough to provoke long press
 }
+
 
 /**  
  * @brief Detect if the left button is pressed.
@@ -577,7 +612,7 @@ void buttons_init(void)
     nrf_gpio_cfg_input(PIN_BTN_RIGHT, NRF_GPIO_PIN_PULLUP);
     nrf_gpio_cfg_input(PIN_CHRG_STAT, NRF_GPIO_PIN_PULLUP);
     // and init their local variables
-    btn_mid(true); // initialize previous state
+    btn_mid(-1); // initialize previous state
     btn_left(true); // initialize previous state
     btn_right(true); // initialize previous state
 }
@@ -777,7 +812,7 @@ void check_power_on_sequence(void)
     // If from Deep Sleep: Check if button is held
     for (int i = 0; i < 20; i++)
     {
-        if (!btn_mid(true)) // this is the only use of raw button read: need to see if it is still pressed.
+        if (!btn_mid(1)) // this is the only use of raw button read: need to see if it is still pressed.
         {
             memset(m_frame_buffer, 0, 1024);
             lcd_flush();
@@ -984,6 +1019,15 @@ void render_menu(void)
     lcd_flush();
 }
 
+void render_goto_sleep_screen(void)
+{
+    memset(m_frame_buffer, 0, 1024);
+    draw_text_buf(40, 30, "GOODBYE");
+    lcd_flush();
+    nrf_delay_ms(1000);
+    enter_deep_sleep();
+}
+
 // --------------------------------------------------------------------------
 // MAIN
 // --------------------------------------------------------------------------
@@ -1017,15 +1061,22 @@ int main(void)
     m_last_time = get_time_ms();
 #endif
 
+    buttons_init(); // again, to kill any long press state from boot
+
     while (1)
     {
+        if (btn_mid(2))
+        {
+            // Long press to enter deep sleep from any state
+            render_goto_sleep_screen();
+        }
         if (current_state == STATE_SCANNER)
         {
             scan_band();
             render_scanner();
 
             // Interaction
-            if (btn_mid(false))
+            if (btn_mid(0))
             {
                 current_state = STATE_MENU;
                 menu_selection = 0; // Reset selection on entry
@@ -1062,7 +1113,7 @@ int main(void)
             if (menu_selection > MENU_ITEMS - 1)
                 menu_selection = 0;
         
-            if (btn_mid(false))
+            if (btn_mid(0))
             {
                 if (menu_selection == 0)
                 {
@@ -1074,11 +1125,7 @@ int main(void)
                 }
                 else if (menu_selection == 2)
                 {
-                    memset(m_frame_buffer, 0, 1024);
-                    draw_text_buf(40, 30, "GOODBYE");
-                    lcd_flush();
-                    nrf_delay_ms(800);
-                    enter_deep_sleep();
+                    render_goto_sleep_screen();
                 }
                 else if (menu_selection == 3)
                 {
@@ -1105,7 +1152,7 @@ int main(void)
         {
             render_info();
             // Press any key to go back
-            if (btn_mid(false) || btn_left(false) || btn_right(false))
+            if (btn_mid(0) || btn_left(false) || btn_right(false))
             {
                 current_state = STATE_MENU;
                 nrf_delay_ms(150);
@@ -1128,7 +1175,7 @@ int main(void)
                     m_contrast_level++;
                 lcd_set_contrast(m_contrast_level);
             }
-            if (btn_mid(false))
+            if (btn_mid(0))
             {
                 current_state = STATE_MENU;
                 settings_save(); // will check if changes are needed to be persisted
