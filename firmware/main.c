@@ -1,6 +1,6 @@
 /**
  * Single File Spectrum Analyzer
- * Hardware: nRF52, ST7565/SH1106 LCD, Radio
+ * Hardware: nrf52832, ST7565 LCD or SH1106 (CH1116) OLED, Radio
  * Updated: Added DFU Bootloader entry
  */
 
@@ -22,6 +22,9 @@
 
 // Select Display Type (Uncomment if SH1106 is used instead of ST7565)
 // #define OLED_TYPE_SH1106
+
+// debugging only: show FPS indicator
+#define SHOW_FPS_INDICATOR
 
 // LCD Pins
 #define PIN_LCD_SCL 26
@@ -69,9 +72,11 @@ static uint8_t m_rssi_peak[BANDWIDTH];
 static float m_rssi_floating[BANDWIDTH];
 static uint8_t m_waterfall_data[DISP_W][4];
 
+#ifdef SHOW_FPS_INDICATOR
 static uint32_t m_frame_count = 0;
 static uint32_t m_fps = 0;
 static uint32_t m_last_time = 0;
+#endif
 
 typedef struct
 {
@@ -93,6 +98,9 @@ typedef enum
 
 app_state_t current_state = STATE_SCANNER;
 int menu_selection = 0;
+#define MENU_ITEMS 4
+int scanner_selection = 0;
+#define SCANNER_MODES 3
 
 // Font 5x7
 const uint8_t font5x7[][5] = {
@@ -290,6 +298,131 @@ void draw_text_buf(int x, int y, char *str)
 // --------------------------------------------------------------------------
 // HARDWARE / PERIPHERALS
 // --------------------------------------------------------------------------
+// forward declaration
+uint32_t get_time_ms(void);
+
+/** 
+ * @brief Detect if the mid button is pressed.
+ * If `raw` is False, it will only return True on the transition from not pressed to pressed (button press event).
+ * It will use debouncing logic in that case.
+ * 
+ * @param raw set to True to get the raw button state, False to get debounced leading edge only
+ * @return True if button was pressed, False otherwise
+ **/
+bool btn_mid(bool raw) 
+{
+    static bool previous_state = false;
+
+    bool raw_state = (nrf_gpio_pin_read(PIN_BTN_MID) == 0); // active low
+    if (raw)
+    {
+        previous_state = raw_state; // keep previous state for next call, that may need debounce
+        return raw_state;
+    }
+
+    if (raw_state != previous_state)
+    {        
+        nrf_delay_ms(10); // Debounce delay
+        raw_state = (nrf_gpio_pin_read(PIN_BTN_MID) == 0); // re-read after debounce delay
+        if (raw_state != previous_state)
+        {
+            previous_state = raw_state;
+            if (raw_state)
+            {
+                return true; // Button was just pressed
+            }
+        }
+    }
+    return false; // Button not pressed or still pressed
+}
+
+/**  
+ * @brief Detect if the left button is pressed.
+ * @param raw set to True to get the raw button state, False to get auto repeating (2 per sec), and debounced leading edge only
+ * @return True if button was pressed, False otherwise
+ **/
+bool btn_left(bool raw) 
+{ 
+    static bool previous_state = false;
+    static uint32_t last_press = 0;
+
+    bool raw_state = (nrf_gpio_pin_read(PIN_BTN_LEFT) == 0); // active low
+    if (raw)
+    {
+        previous_state = raw_state; // keep previous state for next call, that may need debounce
+        return raw_state;
+    }
+    if (raw_state != previous_state)
+    {        
+        nrf_delay_ms(10); // Debounce delay
+        raw_state = (nrf_gpio_pin_read(PIN_BTN_LEFT) == 0); // re-read after debounce delay
+        if (raw_state != previous_state)
+        {
+            previous_state = raw_state;
+            if (raw_state)
+            {
+                last_press = get_time_ms();
+                return true; // Button was just pressed
+            }
+        }
+    }
+    else if (raw_state) // still pressed
+    {
+        if (last_press == 0)
+            last_press = get_time_ms(); // should not happen, but just in case        
+        uint32_t now = get_time_ms();
+        if ((now - last_press) >= 500) // 500ms delay for auto repeat
+        {
+            last_press = now;
+            return true; // Auto repeat press
+        }
+    }
+    return false; // Button not pressed or still pressed (but not long enough to provoke auto repeat)
+}
+
+/**  
+ * @brief Detect if the right button is pressed.
+ * @param raw set to True to get the raw button state, False to get auto repeating (2 per sec), and debounced leading edge only
+ * @return True if button was pressed, False otherwise
+ **/
+bool btn_right(bool raw) 
+{ 
+    static bool previous_state = false;
+    static uint32_t last_press = 0;
+
+    bool raw_state = (nrf_gpio_pin_read(PIN_BTN_RIGHT) == 0); // active low
+    if (raw)
+    {
+        previous_state = raw_state; // keep previous state for next call, that may need debounce
+        return raw_state;
+    }
+    if (raw_state != previous_state)
+    {        
+        nrf_delay_ms(10); // Debounce delay
+        raw_state = (nrf_gpio_pin_read(PIN_BTN_RIGHT) == 0); // re-read after debounce delay
+        if (raw_state != previous_state)
+        {
+            previous_state = raw_state;
+            if (raw_state)
+            {
+                last_press = get_time_ms();
+                return true; // Button was just pressed
+            }
+        }
+    }
+    else if (raw_state) // still pressed
+    {
+        if (last_press == 0)
+            last_press = get_time_ms(); // should not happen, but just in case
+        uint32_t now = get_time_ms();
+        if ((now - last_press) >= 500) // 500ms delay for auto repeat
+        {
+            last_press = now;
+            return true; // Auto repeat press
+        }
+    }
+    return false; // Button not pressed or still pressed (but not long enough to provoke auto repeat)
+}
 
 void buttons_init(void)
 {
@@ -297,11 +430,11 @@ void buttons_init(void)
     nrf_gpio_cfg_input(PIN_BTN_MID, NRF_GPIO_PIN_PULLUP);
     nrf_gpio_cfg_input(PIN_BTN_RIGHT, NRF_GPIO_PIN_PULLUP);
     nrf_gpio_cfg_input(PIN_CHRG_STAT, NRF_GPIO_PIN_PULLUP);
+    // and init their local variables
+    btn_mid(true); // initialize previous state
+    btn_left(true); // initialize previous state
+    btn_right(true); // initialize previous state
 }
-
-bool btn_left() { return (nrf_gpio_pin_read(PIN_BTN_LEFT) == 0); }
-bool btn_mid() { return (nrf_gpio_pin_read(PIN_BTN_MID) == 0); }
-bool btn_right() { return (nrf_gpio_pin_read(PIN_BTN_RIGHT) == 0); }
 
 void enter_deep_sleep(void)
 {
@@ -447,13 +580,15 @@ void scan_band(void)
 // APPLICATION LOGIC
 // --------------------------------------------------------------------------
 
+#define WATERFALL_MINIMUM_VALUE 88
+
 void process_waterfall(void)
 {
     for (int x = 0; x < DISP_W; x++)
     {
         int freq_idx = (x * BANDWIDTH) / DISP_W;
         uint8_t val = m_rssi_current[freq_idx];
-        bool pixel_on = (val < 88);
+        bool pixel_on = (val < WATERFALL_MINIMUM_VALUE); // this is a threshold for turning the pixel on
         uint32_t col = (m_waterfall_data[x][3] << 24) | (m_waterfall_data[x][2] << 16) | (m_waterfall_data[x][1] << 8) | m_waterfall_data[x][0];
         col <<= 1;
         if (pixel_on)
@@ -496,7 +631,7 @@ void check_power_on_sequence(void)
     // If from Deep Sleep: Check if button is held
     for (int i = 0; i < 20; i++)
     {
-        if (!btn_mid())
+        if (!btn_mid(true)) // this is the only use of raw button read: need to see if it is still pressed.
         {
             memset(m_frame_buffer, 0, 1024);
             lcd_flush();
@@ -574,8 +709,14 @@ void render_scanner(void)
 
     // Info Text
     char buf[20];
+#ifdef SHOW_FPS_INDICATOR
     sprintf(buf, "%luhz", m_fps);
     draw_text_buf(0, 0, buf);
+#else
+    // Debug only
+    sprintf(buf, "%d", scanner_selection);
+    draw_text_buf(0, 0, buf);
+#endif    
     sprintf(buf, "%d", 2400 + SCAN_START_FREQ);
     draw_text_buf(0, 56, buf);
     sprintf(buf, "%d", 2400 + SCAN_END_FREQ);
@@ -700,7 +841,9 @@ int main(void)
     memset(m_rssi_peak, 0, sizeof(m_rssi_peak));
     memset(m_rssi_floating, 0, sizeof(m_rssi_floating));
     memset(m_waterfall_data, 0, sizeof(m_waterfall_data));
+#ifdef SHOW_FPS_INDICATOR
     m_last_time = get_time_ms();
+#endif
 
     while (1)
     {
@@ -710,13 +853,21 @@ int main(void)
             render_scanner();
 
             // Interaction
-            if (btn_mid())
+            if (btn_mid(false))
             {
                 current_state = STATE_MENU;
                 menu_selection = 0; // Reset selection on entry
-                nrf_delay_ms(200);
-            }
 
+            }
+            if (btn_left(false)) scanner_selection--;
+            if (btn_right(false)) scanner_selection++;
+            // wrap around scanner mode selections
+            if (scanner_selection < 0)
+                scanner_selection = SCANNER_MODES - 1;
+            if (scanner_selection > SCANNER_MODES - 1)
+                scanner_selection = 0;
+
+#ifdef SHOW_FPS_INDICATOR
             // FPS Counter
             m_frame_count++;
             uint32_t now = get_time_ms();
@@ -726,26 +877,21 @@ int main(void)
                 m_frame_count = 0;
                 m_last_time = now;
             }
+#endif            
         }
         else if (current_state == STATE_MENU)
         {
             render_menu();
 
-            if (btn_left())
-            {
-                menu_selection--;
-                if (menu_selection < 0)
-                    menu_selection = 3; // Wrap around (4 items)
-                nrf_delay_ms(150);
-            }
-            if (btn_right())
-            {
-                menu_selection++;
-                if (menu_selection > 3)
-                    menu_selection = 0; // Wrap around (4 items)
-                nrf_delay_ms(150);
-            }
-            if (btn_mid())
+            if (btn_left(false)) menu_selection--;
+            if (btn_right(false)) menu_selection++;
+            // wrap around menu selection
+            if (menu_selection < 0)
+                menu_selection = MENU_ITEMS - 1;
+            if (menu_selection > MENU_ITEMS - 1)
+                menu_selection = 0;
+        
+            if (btn_mid(false))
             {
                 if (menu_selection == 0)
                 {
@@ -775,7 +921,6 @@ int main(void)
                     NRF_POWER->GPREGRET = BOOTLOADER_DFU_START;
                     NVIC_SystemReset();
                 }
-                nrf_delay_ms(500);
             }
             nrf_delay_ms(150);
         }
@@ -783,10 +928,10 @@ int main(void)
         {
             render_info();
             // Press any key to go back
-            if (btn_mid() || btn_left() || btn_right())
+            if (btn_mid(false) || btn_left(false) || btn_right(false))
             {
                 current_state = STATE_MENU;
-                nrf_delay_ms(300);
+                nrf_delay_ms(150);
             }
         }
     }

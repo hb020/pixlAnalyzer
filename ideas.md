@@ -1,14 +1,25 @@
 # Ideas for future work on the pixlAnalyzer
 
-radio chip: nrf52832
+radio chip: nrf52832, no PMIC.
 
 The radio covers 2.4GHz ISM band, which is commonly used for various wireless communication protocols such as Bluetooth, Wi-Fi, and Zigbee.
 
 Right now it only measures RSSI for spectrum analysis, on the range of 2400-2487MHz, with 1MHz steps.
+(128 pixel display, so on average 1,45 pixels per frequency, some frequencies will have 2 pixels, some 1 pixel)
 
 This functionality can be expanded in several ways:
+
 1. **Frequency range visualisation**: Give visual clues of the type of bands that exist.  
 2. **Signal identification**: Implement decoding for common protocols like Bluetooth Low Energy (BLE), IEEE 802.15.4 (Zigbee, Thread,..), or Wi-Fi. This would allow the device to not only detect signals but also identify the data being transmitted.
+
+Some shortcomings that can be improved:
+
+1. debounce the buttons better (DONE)
+2. better voltage calibration. On my OLED based device: 2.4V becomes 2.5V on screen, and 4V becomes 4.15V on screen.
+3. move the OLED display up one line, it is not centered well on my device
+4. allow removing the speed indicator top left, it is not very useful outside of dev use.
+
+And why not move to the latest SDK version while at it?
 
 ## Frequency range visualisation
 
@@ -106,3 +117,10 @@ The 2.4GHz ISM band is divided into several channels used by different protocols
 | 2487 |    |    |    |
 
 ![ISM band channels](ism_band_channels.png)
+
+
+## SDK links for the nRF52832
+
+[nRF52832 Product Specification v1.9](https://docs.nordicsemi.com/bundle/nRF52832_PS_v1.9/resource/nRF52832_PS_v1.9.pdf)
+[RADIO — 2.4 GHz Radio](https://docs.nordicsemi.com/bundle/ps_nrf52832/page/radio.html)
+[SAADC — Successive approximation analog-to-digital converter](https://docs.nordicsemi.com/bundle/ps_nrf52832/page/saadc.html)
