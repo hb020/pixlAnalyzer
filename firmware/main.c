@@ -263,23 +263,33 @@ void lcd_set_contrast(uint8_t contrast)
 
 typedef struct {
     uint8_t lcd_contrast : 7;
-} settings_data_t; // please keep this as small as possible.
+    int spare: 21; // spare bits to make it 32 bits total
+    uint8_t check: 4; // simple check
+} settings_data_t; // please keep this exactly 32 bits. Bigger is possible, but requires more complex handling below.
+
+_Static_assert(sizeof(settings_data_t) == 4, "settings_data_t must be exactly 32 bits (4 bytes)");
 
 static settings_data_t m_settings_data;
 
 static const settings_data_t def_settings_data = {
-    .lcd_contrast = 32
+    .lcd_contrast = 32,
+    .spare = 0,
+    .check = 0x0A
 };
 
 int32_t settings_init();
 int32_t settings_save();
-int32_t settings_reset();
-settings_data_t *settings_get_data();
 
 static void validate_settings() {
-    settings_data_t *data = settings_get_data();
-    if (data->lcd_contrast > MAX_CONTRAST) {
-        data->lcd_contrast = MAX_CONTRAST;
+    if (m_settings_data.lcd_contrast > MAX_CONTRAST) {
+        m_settings_data.lcd_contrast = MAX_CONTRAST;
+    }
+    if (m_settings_data.lcd_contrast <  16) {
+        m_settings_data.lcd_contrast = 16; // 16 is too low
+    }
+    if (m_settings_data.check != 0x0A) {
+        // invalid data, reset to defaults
+        memcpy(&m_settings_data, &def_settings_data, sizeof(settings_data_t));
     }
 }
 
@@ -290,25 +300,51 @@ int32_t settings_init() {
     
     // Check if UICR contains valid data (not 0xFFFFFFFF which is erased state)
     if (*uicr_settings != 0xFFFFFFFF) {
-        memcpy(&m_settings_data, uicr_settings, sizeof(settings_data_t));
+        memcpy(&m_settings_data, uicr_settings, sizeof(settings_data_t)); // This handles multi-byte copy correctly
         validate_settings();
     } else {
         // No valid data in UICR, use defaults
         memcpy(&m_settings_data, &def_settings_data, sizeof(settings_data_t));
     }
+
+#ifndef OLED_TYPE_SH1106
+    m_contrast_level = m_settings_data.lcd_contrast;
+#endif
     return 0;
 }
 
 int32_t settings_save() {
-    // TODO: if we write more than 181 times, we need to do an erase cycle with ERASEUICR.
+    bool do_save = false;
+#ifndef OLED_TYPE_SH1106
+    if (m_contrast_level != m_settings_data.lcd_contrast)
+    {
+        // save new contrast setting
+        m_settings_data.lcd_contrast = m_contrast_level;
+        do_save = true;                 
+    }
+#endif
+
+    if (!do_save)
+        return 0; // nothing to save
+
+    // Enable UICR erase
+    NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Een << NVMC_CONFIG_WEN_Pos;
+    while (NRF_NVMC->READY == NVMC_READY_READY_Busy) {}
+
+    // Erase UICR
+    NRF_NVMC->ERASEUICR = 1;
+    while (NRF_NVMC->READY == NVMC_READY_READY_Busy) {}
     
+    NRF_NVMC->ERASEUICR = 0; // TODO don't know if this is needed
+    while (NRF_NVMC->READY == NVMC_READY_READY_Busy) {}
+
     // Enable flash writes
     NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Wen << NVMC_CONFIG_WEN_Pos;
-    while (NRF_NVMC->READY == NVMC_READY_READY_Busy) {}
+    while (NRF_NVMC->READY == NVMC_READY_READY_Busy) {}    
     
     // Write settings to UICR CUSTOMER[0]
     uint32_t *uicr_addr = (uint32_t *)0x10001080;
-    uint32_t data_to_write;
+    uint32_t data_to_write; // TODO: this is a single 32 bit write. This needs to be changed if settings_data_t becomes larger than 32 bits.
     memcpy(&data_to_write, &m_settings_data, sizeof(uint32_t));
     *uicr_addr = data_to_write;
     
@@ -318,16 +354,12 @@ int32_t settings_save() {
     // Disable flash writes
     NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Ren << NVMC_CONFIG_WEN_Pos;
     while (NRF_NVMC->READY == NVMC_READY_READY_Busy) {}
+
+    // read back and validate
+    settings_init();
     
     return 0;
 }
-
-settings_data_t *settings_get_data() { return &m_settings_data; }
-
-int32_t settings_reset() {
-    memcpy(&m_settings_data, &def_settings_data, sizeof(settings_data_t));
-}
-
 
 // --------------------------------------------------------------------------
 // GRAPHIC PRIMITIVES
@@ -960,9 +992,6 @@ int main(void)
 {
     // Init Hardware
     settings_init();
-#ifndef OLED_TYPE_SH1106
-    m_contrast_level = settings_get_data()->lcd_contrast;
-#endif
     timer_init();
     buttons_init();
     lcd_init();
@@ -1102,12 +1131,7 @@ int main(void)
             if (btn_mid(false))
             {
                 current_state = STATE_MENU;
-                if (m_contrast_level != settings_get_data()->lcd_contrast)
-                {
-                    // save new contrast setting
-                    settings_get_data()->lcd_contrast = m_contrast_level;
-                    settings_save();                    
-                }
+                settings_save(); // will check if changes are needed to be persisted
                 nrf_delay_ms(150);
             }
         }
