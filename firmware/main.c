@@ -80,7 +80,7 @@ static uint32_t m_last_time = 0;
 
 typedef struct
 {
-    uint8_t level;
+    uint8_t level; // 0..8
     float voltage;
     bool is_charging;
     int16_t raw_adc;
@@ -93,12 +93,30 @@ typedef enum
 {
     STATE_SCANNER,
     STATE_MENU,
-    STATE_INFO
+    STATE_INFO,
+    STATE_CONTRAST
 } app_state_t;
 
 app_state_t current_state = STATE_SCANNER;
 int menu_selection = 0;
+#ifdef OLED_TYPE_SH1106
 #define MENU_ITEMS 4
+#else
+#define MENU_ITEMS 5
+static uint8_t m_contrast_level = 32;
+#endif
+
+const char *menu_items[MENU_ITEMS] =
+{
+    "Back",
+    "About",
+    "Sleep",
+    "DFU mode",
+#ifndef OLED_TYPE_SH1106    
+    "LCD Contrast"
+#endif
+};
+
 int scanner_selection = 0;
 #define SCANNER_MODES 3
 
@@ -188,18 +206,18 @@ void lcd_init(void)
     lcd_write_cmd(0x40);
     lcd_write_cmd(0xAF);
 #else
-    lcd_write_cmd(0xE2);
-    nrf_delay_ms(10);
-    lcd_write_cmd(0xA2);
-    lcd_write_cmd(0xA0);
-    lcd_write_cmd(0xC8);
-    lcd_write_cmd(0x23);
-    lcd_write_cmd(0x81);
-    lcd_write_cmd(0x32);
-    lcd_write_cmd(0x2F);
-    lcd_write_cmd(0xB0);
-    lcd_write_cmd(0xA6);
-    lcd_write_cmd(0xAF);
+    lcd_write_cmd(0xE2); // 1 1 1 0 1 1 1 0, Reset
+    nrf_delay_ms(10);    // sleep 10 ms
+    lcd_write_cmd(0xA2); // 1 0 1 0 0 0 1 0, LCD Bias Set: 1/9 bias ratio
+    lcd_write_cmd(0xA0); // 1 0 1 0 0 0 0 0, ADC Select (Segment Driver Direction Select): normal
+    lcd_write_cmd(0xC8); // 1 1 0 0 1 0 0 0, Common Output Mode Select: reverse
+    lcd_write_cmd(0x23); // 0 0 1 0 0 0 1 1, Voltage Regulator Resistor Ratio Set: 3 (0..7)
+    lcd_write_cmd(0x81); // 1 0 0 0 0 0 0 1, Electronic Volume Mode Set (Contrast setting)
+    lcd_write_cmd(m_contrast_level); // Electronic Volume Register Set (Contrast value): (0..63)
+    lcd_write_cmd(0x2F); // 0 0 1 0 1 1 1 1, Power Control Set: all on
+    lcd_write_cmd(0xB0); // 1 0 1 1 0 0 0 0, Set Page Address: page 0
+    lcd_write_cmd(0xA6); // 1 0 1 0 0 1 1 0, Display Normal / Inverse: normal
+    lcd_write_cmd(0xAF); // 1 0 1 0 1 1 1 1, Display ON
 #endif
 }
 
@@ -228,6 +246,15 @@ void lcd_flush(void)
         lcd_write_data_block(&m_frame_buffer[page * DISP_W], DISP_W);
     }
 }
+
+#ifndef OLED_TYPE_SH1106
+#define MAX_CONTRAST 63
+void lcd_set_contrast(uint8_t contrast)
+{
+    lcd_write_cmd(0x81);
+    lcd_write_cmd(contrast & 0x3F);
+}
+#endif
 
 // --------------------------------------------------------------------------
 // GRAPHIC PRIMITIVES
@@ -270,7 +297,21 @@ void draw_box(int x, int y, int w, int h, bool fill, bool color)
     }
 }
 
-void draw_char_buf(int x, int y, char c)
+void draw_filled_bar(int x, int y, int w, int h, int fill_level, int fill_max)
+{
+    draw_box(x, y, w, h, false, true);
+    
+    // inside fill
+    if (fill_level > 0)
+    {
+        if (fill_level > fill_max)
+            fill_level = fill_max;
+        int wf = (fill_level * (w - 2)) / fill_max;
+        draw_box(x + 1, y + 1, wf, h - 2, true, true);
+    }
+}
+
+void draw_char_buf(int x, int y,  char c)
 {
     if (c < 32 || c > 122)
         c = 32;
@@ -286,7 +327,7 @@ void draw_char_buf(int x, int y, char c)
     }
 }
 
-void draw_text_buf(int x, int y, char *str)
+void draw_text_buf(int x, int y, const char *str)
 {
     while (*str)
     {
@@ -338,7 +379,7 @@ bool btn_mid(bool raw)
 
 /**  
  * @brief Detect if the left button is pressed.
- * @param raw set to True to get the raw button state, False to get auto repeating (2 per sec), and debounced leading edge only
+ * @param raw set to True to get the raw button state, False to get auto repeating (3 per sec), and debounced leading edge only
  * @return True if button was pressed, False otherwise
  **/
 bool btn_left(bool raw) 
@@ -371,7 +412,7 @@ bool btn_left(bool raw)
         if (last_press == 0)
             last_press = get_time_ms(); // should not happen, but just in case        
         uint32_t now = get_time_ms();
-        if ((now - last_press) >= 500) // 500ms delay for auto repeat
+        if ((now - last_press) >= 333) // 333ms delay for auto repeat
         {
             last_press = now;
             return true; // Auto repeat press
@@ -382,7 +423,7 @@ bool btn_left(bool raw)
 
 /**  
  * @brief Detect if the right button is pressed.
- * @param raw set to True to get the raw button state, False to get auto repeating (2 per sec), and debounced leading edge only
+ * @param raw set to True to get the raw button state, False to get auto repeating (3 per sec), and debounced leading edge only
  * @return True if button was pressed, False otherwise
  **/
 bool btn_right(bool raw) 
@@ -415,7 +456,7 @@ bool btn_right(bool raw)
         if (last_press == 0)
             last_press = get_time_ms(); // should not happen, but just in case
         uint32_t now = get_time_ms();
-        if ((now - last_press) >= 500) // 500ms delay for auto repeat
+        if ((now - last_press) >= 333) // 333ms delay for auto repeat
         {
             last_press = now;
             return true; // Auto repeat press
@@ -763,52 +804,77 @@ void render_info(void)
     lcd_flush();
 }
 
+#ifndef OLED_TYPE_SH1106
+void render_contrast_setting(void)
+{
+    memset(m_frame_buffer, 0, 1024);
+
+    char buf[30];
+    sprintf(buf, "Contrast: %d", m_contrast_level);
+    int x = (DISP_W - (strlen(buf) * 6)) / 2; // center text
+    draw_text_buf(x, 20, buf);
+
+    x = (DISP_W - (MAX_CONTRAST + 2)) / 2;
+    draw_filled_bar(x, 30, MAX_CONTRAST + 2, 8, m_contrast_level, MAX_CONTRAST);
+
+    lcd_flush();
+}
+#endif
+
+#define MENU_LEFT_X 25
+
+void render_menu_item(int line)
+{
+    if (line < 0) 
+    {
+        // this is the header
+        draw_text_buf(52, 3, "MENU");
+        return;
+    }
+
+    if (line > MENU_ITEMS - 1)
+        return; // out of range
+    
+    int x = MENU_LEFT_X;
+    int y = (line * 8) + 21;
+    if (line == menu_selection)
+    {
+        draw_text_buf(x - 10, y, ">");
+    }
+    const char *text = menu_items[line];
+    draw_text_buf(x, y, text);
+}
+
 void render_menu(void)
 {
     bat_measure_update();
     memset(m_frame_buffer, 0, 1024);
 
-    draw_box(10, 2, 108, 60, false, true);
+    draw_box(0, 0, 128, 64, false, true);
 
-    draw_text_buf(52, 4, "MENU");
+    render_menu_item(-1); // header
 
+    // Battery Status
     char buf[30];
     int v_int = (int)current_bat_status.voltage;
     int v_dec = (int)((current_bat_status.voltage - v_int) * 100);
-    sprintf(buf, "%d.%02dV", v_int, v_dec);
+    int y = 11;
+    sprintf(buf, "Batt: %d.%02dV", v_int, v_dec);
+    draw_text_buf(MENU_LEFT_X, y, buf);
 
-    draw_text_buf(30, 13, buf);
+    int x = MENU_LEFT_X + ((strlen(buf) + 1) * 6); // N chars width + 2 chars space
+    int h = 7;
+    // the battery
+    int wm = (2 * 8) + 2; // 2 pixels per level + 2 pixels border
+    draw_filled_bar(x, y, wm, h, current_bat_status.level, 8);
+    // tip of the battery
+    draw_box(x + wm, y+2, 2, h-4, false, true);
 
-    draw_box(30, 22, 64, 4, false, true);
-    if (current_bat_status.level > 0)
+    // Menu Items
+    for (int line = 0; line < MENU_ITEMS; line++)
     {
-        int w = (current_bat_status.level * 62) / 8;
-        draw_box(31, 23, w, 2, true, true);
+        render_menu_item(line);
     }
-
-    // Item 0: Back
-    if (menu_selection == 0)
-        draw_text_buf(25, 29, "> Back");
-    else
-        draw_text_buf(25, 29, "  Back");
-
-    // Item 1: Info
-    if (menu_selection == 1)
-        draw_text_buf(25, 37, "> Info");
-    else
-        draw_text_buf(25, 37, "  Info");
-
-    // Item 2: Sleep
-    if (menu_selection == 2)
-        draw_text_buf(25, 45, "> Sleep");
-    else
-        draw_text_buf(25, 45, "  Sleep");
-
-    // Item 3: DFU
-    if (menu_selection == 3)
-        draw_text_buf(25, 53, "> DFU");
-    else
-        draw_text_buf(25, 53, "  DFU");
 
     lcd_flush();
 }
@@ -857,7 +923,6 @@ int main(void)
             {
                 current_state = STATE_MENU;
                 menu_selection = 0; // Reset selection on entry
-
             }
             if (btn_left(false)) scanner_selection--;
             if (btn_right(false)) scanner_selection++;
@@ -921,6 +986,12 @@ int main(void)
                     NRF_POWER->GPREGRET = BOOTLOADER_DFU_START;
                     NVIC_SystemReset();
                 }
+#ifndef OLED_TYPE_SH1106
+                else if (menu_selection == 4)
+                {
+                    current_state = STATE_CONTRAST;
+                }
+#endif                
             }
             nrf_delay_ms(150);
         }
@@ -934,5 +1005,29 @@ int main(void)
                 nrf_delay_ms(150);
             }
         }
+#ifndef OLED_TYPE_SH1106        
+        else if (current_state == STATE_CONTRAST)
+        {
+            render_contrast_setting();
+
+            if (btn_left(false))
+            {
+                if (m_contrast_level > 0)
+                    m_contrast_level--;
+                lcd_set_contrast(m_contrast_level);
+            }
+            if (btn_right(false))
+            {
+                if (m_contrast_level < MAX_CONTRAST)
+                    m_contrast_level++;
+                lcd_set_contrast(m_contrast_level);
+            }
+            if (btn_mid(false))
+            {
+                current_state = STATE_MENU;
+                nrf_delay_ms(150);
+            }
+        }
+#endif
     }
 }
