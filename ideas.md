@@ -15,8 +15,8 @@ This functionality can be expanded in several ways:
 Some shortcomings that can be improved:
 
 1. debounce the buttons better (DONE)
-2. better voltage calibration. On my OLED based device: 2.4V becomes 2.5V on screen, and 4V becomes 4.15V on screen.
-3. move the OLED display up one line, it is not centered well on my device
+2. LCD contrast adjustment (DONE, but for now only 181 writes can be done before a full erase cycle is needed)
+3. better voltage calibration. On my OLED based device: 2.4V becomes 2.5V on screen, and 4V becomes 4.15V on screen.
 4. allow removing the speed indicator top left, it is not very useful outside of dev use.
 
 And why not move to the latest SDK version while at it?

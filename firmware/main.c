@@ -247,14 +247,87 @@ void lcd_flush(void)
     }
 }
 
-#ifndef OLED_TYPE_SH1106
 #define MAX_CONTRAST 63
+#ifndef OLED_TYPE_SH1106
 void lcd_set_contrast(uint8_t contrast)
 {
     lcd_write_cmd(0x81);
     lcd_write_cmd(contrast & 0x3F);
 }
 #endif
+
+// --------------------------------------------------------------------------
+// SETTINGS
+// --------------------------------------------------------------------------
+// Settings are stored in UICR CUSTOMER register 0 (0x10001080 .. 0x100010FC)
+
+typedef struct {
+    uint8_t lcd_contrast : 7;
+} settings_data_t; // please keep this as small as possible.
+
+static settings_data_t m_settings_data;
+
+static const settings_data_t def_settings_data = {
+    .lcd_contrast = 32
+};
+
+int32_t settings_init();
+int32_t settings_save();
+int32_t settings_reset();
+settings_data_t *settings_get_data();
+
+static void validate_settings() {
+    settings_data_t *data = settings_get_data();
+    if (data->lcd_contrast > MAX_CONTRAST) {
+        data->lcd_contrast = MAX_CONTRAST;
+    }
+}
+
+int32_t settings_init() {
+    // Try to read from UICR customer registers
+    // UICR CUSTOMER registers start at address 0x10001080
+    uint32_t *uicr_settings = (uint32_t *)0x10001080;
+    
+    // Check if UICR contains valid data (not 0xFFFFFFFF which is erased state)
+    if (*uicr_settings != 0xFFFFFFFF) {
+        memcpy(&m_settings_data, uicr_settings, sizeof(settings_data_t));
+        validate_settings();
+    } else {
+        // No valid data in UICR, use defaults
+        memcpy(&m_settings_data, &def_settings_data, sizeof(settings_data_t));
+    }
+    return 0;
+}
+
+int32_t settings_save() {
+    // TODO: if we write more than 181 times, we need to do an erase cycle with ERASEUICR.
+    
+    // Enable flash writes
+    NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Wen << NVMC_CONFIG_WEN_Pos;
+    while (NRF_NVMC->READY == NVMC_READY_READY_Busy) {}
+    
+    // Write settings to UICR CUSTOMER[0]
+    uint32_t *uicr_addr = (uint32_t *)0x10001080;
+    uint32_t data_to_write;
+    memcpy(&data_to_write, &m_settings_data, sizeof(uint32_t));
+    *uicr_addr = data_to_write;
+    
+    // Wait for write to complete
+    while (NRF_NVMC->READY == NVMC_READY_READY_Busy) {}
+    
+    // Disable flash writes
+    NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Ren << NVMC_CONFIG_WEN_Pos;
+    while (NRF_NVMC->READY == NVMC_READY_READY_Busy) {}
+    
+    return 0;
+}
+
+settings_data_t *settings_get_data() { return &m_settings_data; }
+
+int32_t settings_reset() {
+    memcpy(&m_settings_data, &def_settings_data, sizeof(settings_data_t));
+}
+
 
 // --------------------------------------------------------------------------
 // GRAPHIC PRIMITIVES
@@ -886,6 +959,10 @@ void render_menu(void)
 int main(void)
 {
     // Init Hardware
+    settings_init();
+#ifndef OLED_TYPE_SH1106
+    m_contrast_level = settings_get_data()->lcd_contrast;
+#endif
     timer_init();
     buttons_init();
     lcd_init();
@@ -1025,6 +1102,12 @@ int main(void)
             if (btn_mid(false))
             {
                 current_state = STATE_MENU;
+                if (m_contrast_level != settings_get_data()->lcd_contrast)
+                {
+                    // save new contrast setting
+                    settings_get_data()->lcd_contrast = m_contrast_level;
+                    settings_save();                    
+                }
                 nrf_delay_ms(150);
             }
         }
