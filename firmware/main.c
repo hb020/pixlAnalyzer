@@ -2,7 +2,7 @@
  * Single File Spectrum Analyzer
  * Hardware: nrf52832, ST7565 LCD or SH1106 (CH1116) OLED, Radio, no PMIC
  * Updated: Added DFU Bootloader entry
- */
+ **/
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -30,7 +30,7 @@
 #endif
 
 // debugging only: show FPS indicator
-#define SHOW_FPS_INDICATOR
+// #define SHOW_FPS_INDICATOR
 
 // LCD Pins
 #define PIN_LCD_SCL 26
@@ -57,7 +57,6 @@
 #define DISP_W 128
 #define DISP_H 64
 #define SPECTRUM_H 32
-#define WATERFALL_START 32
 
 // DFU Magic Number (Standard Nordic SDK value)
 #define BOOTLOADER_DFU_START 0xB1
@@ -76,10 +75,16 @@
 // Global Variables & Fonts
 // --------------------------------------------------------------------------
 
+// The screen buffer
 static uint8_t m_frame_buffer[1024];
+
+// array with RSSI values for each frequency in the scan range, normally 20..90 (meaning -20dBm .. -90dBm)
 static uint8_t m_rssi_current[BANDWIDTH];
+// array with peak RSSI values for each frequency in the scan range. Both will use gradual falloff.
 static uint8_t m_rssi_peak[BANDWIDTH];
 static float m_rssi_floating[BANDWIDTH];
+
+// array with waterfall data
 static uint8_t m_waterfall_data[DISP_W][4];
 
 #ifdef SHOW_FPS_INDICATOR
@@ -128,7 +133,14 @@ const char *menu_items[MENU_ITEMS] =
 };
 
 int scanner_selection = 0;
-#define SCANNER_MODES 3
+#define SCANNER_MODES 4
+const char *scanner_mode_names[SCANNER_MODES] =
+{
+    "Freq",
+    "802.15.4",
+    "WiFi B/G/N",
+    "BLE"
+};
 
 #define FONT_START 32
 #define FONT_END 127
@@ -375,11 +387,12 @@ void lcd_set_contrast(uint8_t contrast)
 // --------------------------------------------------------------------------
 // Settings
 // Settings are stored in UICR CUSTOMER register 0 (0x10001080 .. 0x100010FC)
+// This is a poor man's persistance mechanism, as UICR can only be written/erased in 32-bit words
 // --------------------------------------------------------------------------
 
 typedef struct {
-    uint8_t lcd_contrast : 7;
-    int spare: 21; // spare bits to make it 32 bits total
+    uint8_t lcd_contrast : 6; // 0..63
+    int spare: 22; // spare bits to make it 32 bits total
     uint8_t check: 4; // simple check
 } settings_data_t; // please keep this exactly 32 bits. Bigger is possible, but requires more complex handling below.
 
@@ -401,7 +414,7 @@ static void validate_settings() {
         m_settings_data.lcd_contrast = MAX_CONTRAST;
     }
     if (m_settings_data.lcd_contrast <  16) {
-        m_settings_data.lcd_contrast = 16; // 16 is too low
+        m_settings_data.lcd_contrast = 16; // 16 is too low, you'll see nothing
     }
     if (m_settings_data.check != 0x0A) {
         // invalid data, reset to defaults
@@ -526,7 +539,7 @@ void draw_box(int x, int y, int w, int h, bool fill, bool color)
  * @brief Draw a bounding box with given offset from the edges
  * 
  * @param offset offset from edge (0...DISP_W/2)
- */
+ **/
 void draw_boundingbox(int offset)
 {
     if (offset < 0) offset = 0;
@@ -545,7 +558,7 @@ void draw_boundingbox(int offset)
  * @param fill_level fill level
  * @param fill_max maximum fill level
  * @param spacer if true, add 1 pixel empty space between border and fill
- */
+ **/
 void draw_filled_bar(int x, int y, int w, int h, int fill_level, int fill_max, bool spacer)
 {
     if (x < 0)
@@ -566,6 +579,14 @@ void draw_filled_bar(int x, int y, int w, int h, int fill_level, int fill_max, b
     }
 }
 
+
+/**
+ * @brief Draw a character on screen
+ * 
+ * @param x x position (left of the character)
+ * @param y y position (top of the character)
+ * @param c the character. Must be within the defined set of the font (see at font definition)
+ **/
 void draw_char_buf(int x, int y,  char c)
 {
     if (c < FONT_START || c > FONT_END)
@@ -582,6 +603,14 @@ void draw_char_buf(int x, int y,  char c)
     }
 }
 
+
+/**
+ * @brief Draw a string on screen
+ * 
+ * @param x x position (left of the string)
+ * @param y y position (top of the string)
+ * @param str the string
+ **/
 void draw_text_buf(int x, int y, const char *str)
 {
     while (*str)
@@ -591,11 +620,66 @@ void draw_text_buf(int x, int y, const char *str)
     }
 }
 
+
+/** 
+ * @brief Draw a number vertically
+ * 
+ * @param x x position (center of characters)
+ * @param y y position (top of first character)
+ * @param nr number to draw. Only numbers 0..99 will be drawn
+ **/
+void draw_nr_vertical(int x, int y, int nr)
+{
+    if (nr < 0) return;
+    if (nr > 99) nr = 99;
+    x -= 2; // center of character (well, approx)
+    char ch;    
+    if (nr >= 10)
+    {
+        ch = '0' + (nr / 10);
+        draw_char_buf(x, y, ch);
+        y += 8;
+    }
+    ch = '0' + (nr % 10);
+    draw_char_buf(x, y, ch);
+}
+
+/**
+ * @brief draw a string centered on screeen
+ * 
+ * @param y y position (top of the string)
+ * @param str the string
+ **/
 void draw_text_buf_centered(int y, const char *str)
 {
     int len = strlen(str);
     int total_width = len * 6; // 5 pixels + 1 pixel space
     int start_x = (DISP_W - total_width) / 2;
+    draw_text_buf(start_x, y, str);
+}
+
+/**
+ * @brief draw a string left aligned on screeen
+ * 
+ * @param y y position (top of the string)
+ * @param str the string
+ **/
+void draw_text_buf_left(int y, const char *str)
+{
+    draw_text_buf(0, y, str);
+}
+
+/**
+ * @brief draw a string right aligned on screeen
+ * 
+ * @param y y position (top of the string)
+ * @param str the string
+ **/
+void draw_text_buf_right(int y, const char *str)
+{
+    int len = strlen(str);
+    int total_width = (len * 6) - 1; // 5 pixels + 1 pixel space
+    int start_x = (DISP_W - total_width);
     draw_text_buf(start_x, y, str);
 }
 
@@ -790,7 +874,7 @@ void buttons_init(void)
  * @brief Enter deep sleep mode.
  * This function will turn off the LCD, disable the radio, and configure the mid button to wake up the device.
  * This function does not return.
- */
+ **/
 void enter_deep_sleep(void)
 {
     memset(m_frame_buffer, 0, 1024);
@@ -907,7 +991,7 @@ void bat_measure_update(void)
 
 /**
  * @brief Initialize the radio for scanning
- */
+ **/
 void radio_init_scanner(void)
 {
     NRF_RADIO->TASKS_DISABLE = 1;
@@ -921,7 +1005,7 @@ void radio_init_scanner(void)
 /**
  * @brief scans the radio.
  * This function fills the `m_rssi_current[]` array with RSSI values for each frequency in the scan range.
- */
+ **/
 void scan_band(void)
 {
     if ((NRF_CLOCK->HFCLKSTAT & (CLOCK_HFCLKSTAT_SRC_Msk | CLOCK_HFCLKSTAT_STATE_Msk)) !=
@@ -953,6 +1037,119 @@ void scan_band(void)
     }
 }
 
+// Frequency mapping table to IEEE 802.15.4 channel, WiFi channel, and BLE channel
+// this is not memory optimal, but CPU optimal, as the index is the frequency.
+// index = frequency - SCAN_BASE_FREQ
+// -1 means: not a center frequency for that standard
+// columns: 802.15.4, 802.11b/g/n WiFi, BLE
+// These columns must be aligned with the scanner_mode_names, offset by 1.
+const int8_t freq_to_channel_map[BANDWIDTH][3] = {
+    { -1, -1, -1}, // 2400
+    { -1, -1, -1}, // 2401
+    { -1, -1, 37}, // 2402
+    { -1, -1, -1}, // 2403
+    { -1, -1,  0}, // 2404
+    { 11, -1, -1}, // 2405
+    { -1, -1,  1}, // 2406
+    { -1, -1, -1}, // 2407
+    { -1, -1,  2}, // 2408
+    { -1, -1, -1}, // 2409
+    { 12, -1,  3}, // 2410
+    { -1, -1, -1}, // 2411
+    { -1,  1,  4}, // 2412
+    { -1, -1, -1}, // 2413
+    { -1, -1,  5}, // 2414
+    { 13, -1, -1}, // 2415
+    { -1, -1,  6}, // 2416
+    { -1,  2, -1}, // 2417
+    { -1, -1,  7}, // 2418
+    { -1, -1, -1}, // 2419
+    { 14, -1,  8}, // 2420
+    { -1, -1, -1}, // 2421
+    { -1,  3,  9}, // 2422
+    { -1, -1, -1}, // 2423
+    { -1, -1, 10}, // 2424
+    { 15, -1, -1}, // 2425
+    { -1, -1, 38}, // 2426
+    { -1,  4, -1}, // 2427
+    { -1, -1, 11}, // 2428
+    { -1, -1, -1}, // 2429
+    { 16, -1, 12}, // 2430
+    { -1, -1, -1}, // 2431
+    { -1,  5, 13}, // 2432
+    { -1, -1, -1}, // 2433
+    { -1, -1, 14}, // 2434
+    { 17, -1, -1}, // 2435
+    { -1, -1, 15}, // 2436
+    { -1,  6, -1}, // 2437
+    { -1, -1, 16}, // 2438
+    { -1, -1, -1}, // 2439
+    { 18, -1, 17}, // 2440
+    { -1, -1, -1}, // 2441
+    { -1,  7, 18}, // 2442
+    { -1, -1, -1}, // 2443
+    { -1, -1, 19}, // 2444
+    { 19, -1, -1}, // 2445
+    { -1, -1, 20}, // 2446
+    { -1,  8, -1}, // 2447
+    { -1, -1, 21}, // 2448
+    { -1, -1, -1}, // 2449
+    { 20, -1, 22}, // 2450
+    { -1, -1, -1}, // 2451
+    { -1,  9, 23}, // 2452
+    { -1, -1, -1}, // 2453
+    { -1, -1, 24}, // 2454
+    { 21, -1, -1}, // 2455
+    { -1, -1, 25}, // 2456
+    { -1, 10, -1}, // 2457
+    { -1, -1, 26}, // 2458
+    { -1, -1, -1}, // 2459
+    { 22, -1, 27}, // 2460
+    { -1, -1, -1}, // 2461
+    { -1, 11, 28}, // 2462
+    { -1, -1, -1}, // 2463
+    { -1, -1, 29}, // 2464
+    { 23, -1, -1}, // 2465
+    { -1, -1, 30}, // 2466
+    { -1, 12, -1}, // 2467
+    { -1, -1, 31}, // 2468
+    { -1, -1, -1}, // 2469
+    { 24, -1, 32}, // 2470
+    { -1, -1, -1}, // 2471
+    { -1, 13, 33}, // 2472
+    { -1, -1, -1}, // 2473
+    { -1, -1, 34}, // 2474
+    { 25, -1, -1}, // 2475
+    { -1, -1, 35}, // 2476
+    { -1, -1, -1}, // 2477
+    { -1, -1, 36}, // 2478
+    { -1, -1, -1}, // 2479
+    { 26, -1, 39}, // 2480
+    { -1, -1, -1}, // 2481
+    { -1, -1, -1}, // 2482
+    { -1, -1, -1}, // 2483
+    { -1, 14, -1}, // 2484
+    { -1, -1, -1}, // 2485
+    { -1, -1, -1}, // 2486
+    { -1, -1, -1}  // 2487
+};
+
+/**
+ * @brief Convert frequency to channel number for given mode
+ * 
+ * @param freq Frequency in MHz, already offset by SCAN_BASE_FREQ
+ * @param mode 1 = IEEE 802.15.4, 2 = WiFi 802.11b/g/n, 3 = BLE
+ * @return int Channel number, or -1 if not a valid channel for that mode
+ **/
+int freq_to_channel(int freq, int mode)
+{
+    if (mode < 1 || mode > 3)
+        return -1;
+    if (freq < SCAN_START_FREQ || freq > SCAN_END_FREQ)
+        return -1;
+    return freq_to_channel_map[freq - SCAN_START_FREQ][mode - 1];
+}
+
 #pragma endregion Radio Scanner
 
 #pragma region UI Functions
@@ -962,7 +1159,7 @@ void scan_band(void)
 
 /**
  * @brief Show the boot "splash screen"
- */
+ **/
 void show_boot_screen(void)
 {
     memset(m_frame_buffer, 0, 1024);
@@ -982,7 +1179,7 @@ void show_boot_screen(void)
 
 /**
  * @brief Startup screen sequence
- */
+ **/
 void check_power_on_sequence(void)
 {
 	// Sometimes not working so only activate in development or so
@@ -1006,7 +1203,7 @@ void check_power_on_sequence(void)
         }
 
         memset(m_frame_buffer, 0, 1024);
-        draw_text_buf(25, 25, "HOLD TO START");
+        draw_text_buf_centered(25, "HOLD TO START");
 
         draw_filled_bar(-1, 38, 100, 8, i, 19, true);
 
@@ -1015,19 +1212,54 @@ void check_power_on_sequence(void)
     }
 }
 
+/**
+ * @brief Render the battery icon at the specified position.
+ * 
+ * @param x The x-coordinate for the battery icon. Use -1 for right aligned.
+ * @param y The y-coordinate for the battery icon.
+ */
+void render_battery(int x, int y)
+{
+    int h = 7;
+    // the battery
+    int wm = (2 * 8) + 2; // 2 pixels per level + 2 pixels border
+    if (x < 0)
+        x = DISP_W - (wm + 4); // right aligned
+    draw_filled_bar(x, y, wm, h, current_bat_status.level, 8, false);
+    // tip of the battery
+    draw_box(x + wm, y+2, 2, h-4, false, true);
+}
+
+
+/**
+ * @brief calculates the frequence (offset to SCAN_BASE_FREQ) for a column on screen
+ * 
+ * @param column 
+ * @return int he offset to SCAN_BASE_FREQ for a column on screen
+ **/
+int column_to_freq(int column)
+{
+    if (column < 0)
+        column = 0;
+    if (column >= DISP_W)
+        column = DISP_W - 1;
+    int freq_idx = (column * BANDWIDTH) / DISP_W;
+    return SCAN_START_FREQ + freq_idx;
+}
+
 
 /**
  * @brief Process the waterfall data in the scanner view, by shifting down and adding new line.
  * 
  * To be called only by `render_scanner()`
- */
+ **/
 void process_scanner_waterfall(void)
 {
 #define WATERFALL_MINIMUM_VALUE 88
 
     for (int x = 0; x < DISP_W; x++)
     {
-        int freq_idx = (x * BANDWIDTH) / DISP_W;
+        int freq_idx = column_to_freq(x);
         uint8_t val = m_rssi_current[freq_idx];
         bool pixel_on = (val < WATERFALL_MINIMUM_VALUE); // this is a threshold for turning the pixel on
         uint32_t col = (m_waterfall_data[x][3] << 24) | (m_waterfall_data[x][2] << 16) | (m_waterfall_data[x][1] << 8) | m_waterfall_data[x][0];
@@ -1041,17 +1273,103 @@ void process_scanner_waterfall(void)
     }
 }
 
+/**
+ * @brief Render only the waterfall part of the scanner screen
+ * 
+ * To be called only by `render_scanner()`
+ **/
+void render_scanner_waterfall(void)
+{
+    // Draw Waterfall (Bottom half)
+    int start_page = SPECTRUM_H / 8;
+    for (int x = 0; x < DISP_W; x++)
+    {
+        for (int p = 0; p < 4; p++)
+        {
+            if (start_page + p < 8)
+                m_frame_buffer[x + (start_page + p) * DISP_W] = m_waterfall_data[x][p];
+        }
+    }
+}
+
+/**
+ * @brief Render the channel markers
+ * 
+ * To be called only by `render_scanner()`
+ * @param mode 1 = IEEE 802.15.4, 2 = WiFi 802.11b/g/n, 3 = BLE
+ **/
+void render_scanner_channels(int mode) 
+{
+// channel numbers are 16 pixes high 
+#define CHANNEL_TOP_TEXT (DISP_H - 16)
+    // Draw Waterfall with channel markers (Bottom half)
+    int start_page = SPECTRUM_H / 8;
+    int last_channel = -1;
+    for (int x = 0; x < DISP_W; x++)
+    {
+        int freq_idx = column_to_freq(x);
+        int channel = freq_to_channel(freq_idx, mode);
+        if (channel != -1)
+        {
+            if (channel == last_channel)
+                continue; // already drawn
+            last_channel = channel;
+            bool draw_channel_nr = true;
+            enum line_type_enum { LINE_NORMAL = 0, LINE_SHORT, LINE_DOTTED };
+            enum line_type_enum line_type = LINE_NORMAL; // normal line. 
+            if (mode == 3)
+            {
+                // for BLE
+                if (channel == 37 || channel == 38 || channel == 39)
+                {
+                    // special case for advertising channels
+                    line_type = LINE_DOTTED;
+                    draw_channel_nr = false; // would be nice, but messes up
+                } 
+                else
+                {
+                    // too many channels, only draw every 5th channel number
+                    if (channel % 5 != 0)
+                    {
+                        draw_channel_nr = false;
+                        line_type = LINE_SHORT;
+                    }
+                }
+            }
+            // draw line
+            switch (line_type)
+            {
+                case LINE_NORMAL:
+                    draw_vline(x, SPECTRUM_H + 2, CHANNEL_TOP_TEXT - 2);
+                    break;
+                case LINE_SHORT:
+                    draw_vline(x, SPECTRUM_H + 2, CHANNEL_TOP_TEXT - 4);
+                    break;
+                case LINE_DOTTED:
+                    for (int y = SPECTRUM_H + 2; y <= CHANNEL_TOP_TEXT - 2; y += 2)
+                    {
+                        draw_pixel(x, y, true);
+                    }
+                    break;
+            }
+
+            // draw channel number vertically
+            if (draw_channel_nr)
+                draw_nr_vertical(x, CHANNEL_TOP_TEXT, channel);
+        }
+    }
+}
 
 /**
  * @brief Render the main scanner screen
- */
+ **/
 void render_scanner(void)
 {
     memset(m_frame_buffer, 0, 1024);
 
     for (int x = 0; x < DISP_W; x++)
     {
-        int freq_idx = (x * BANDWIDTH) / DISP_W;
+        int freq_idx = column_to_freq(x);
         if (freq_idx >= BANDWIDTH)
             freq_idx = BANDWIDTH - 1;
         uint8_t val = m_rssi_current[freq_idx];
@@ -1063,7 +1381,7 @@ void render_scanner(void)
         if (height < 0)
             height = 0;
 
-        // Peak Hold Logic
+        // Peak Hold Logic with gradual falloff
         if (height >= m_rssi_peak[freq_idx])
             m_rssi_peak[freq_idx] = height;
         else if (m_rssi_peak[freq_idx] > 0)
@@ -1073,7 +1391,7 @@ void render_scanner(void)
         if (bar_h > 0)
             draw_vline(x, SPECTRUM_H - bar_h, SPECTRUM_H - 1);
 
-        // Floating Dot
+        // Floating Dot, even slower falloff
         float fh = (float)height;
         if (fh >= m_rssi_floating[freq_idx])
             m_rssi_floating[freq_idx] = fh;
@@ -1084,39 +1402,41 @@ void render_scanner(void)
                 m_rssi_floating[freq_idx] = 0;
         }
 
-        int dot_y = SPECTRUM_H - (int)m_rssi_floating[freq_idx] - 2;
-        if (dot_y >= 0 && dot_y < SPECTRUM_H)
+        int dot_y;
+        if ((int)m_rssi_floating[freq_idx] <= 0)
+            dot_y = SPECTRUM_H - 1 ; // base line
+        else 
+            dot_y = SPECTRUM_H - (int)m_rssi_floating[freq_idx] - 2; // 2 offset
+        if (dot_y >= 0)
             draw_pixel(x, dot_y, true);
     }
 
     process_scanner_waterfall();
 
-    // Draw Waterfall (Bottom half)
-    int start_page = WATERFALL_START / 8;
-    for (int x = 0; x < DISP_W; x++)
-    {
-        for (int p = 0; p < 4; p++)
-        {
-            if (start_page + p < 8)
-                m_frame_buffer[x + (start_page + p) * DISP_W] = m_waterfall_data[x][p];
-        }
-    }
+    if (scanner_selection == 0)
+        render_scanner_waterfall();
+    else
+        render_scanner_channels(scanner_selection); // for now, same waterfall for all modes
 
     // Info Text
-    char buf[20];
+    char buf[40];
 #ifdef SHOW_FPS_INDICATOR
     // show the FPS for debugging
     sprintf(buf, "%luhz", m_fps);
-    draw_text_buf(0, 0, buf);
+    draw_text_buf_left( 0, buf);
 #else
-    // Debug only
-    sprintf(buf, "%d", scanner_selection);
-    draw_text_buf(0, 0, buf);
-#endif    
-    sprintf(buf, "%d", SCAN_BASE_FREQ + SCAN_START_FREQ);
-    draw_text_buf(0, 56, buf);
-    sprintf(buf, "%d", SCAN_BASE_FREQ + SCAN_END_FREQ);
-    draw_text_buf(100, 56, buf);
+    // scanner modes
+    sprintf(buf, "%s", scanner_mode_names[scanner_selection]);
+    draw_text_buf_left( 0, buf);
+#endif
+    // Frequency Labels
+    if (scanner_selection == 0)
+    {
+        sprintf(buf, "%d", SCAN_BASE_FREQ + column_to_freq(0));
+        draw_text_buf_left( 56, buf);
+        sprintf(buf, "%d", SCAN_BASE_FREQ + column_to_freq(DISP_W - 1));
+        draw_text_buf_right(56, buf);
+    }
 
     // Battery Update (rarely)
     static int batt_ctr = 0;
@@ -1128,13 +1448,17 @@ void render_scanner(void)
 
     if (current_bat_status.is_charging)
     {
-        draw_text_buf(100, 0, "CHRG");
+        draw_text_buf_right(0, "CHRG");
     }
     else
     {
-        int pct = (current_bat_status.level * 100) / 8;
-        sprintf(buf, "%d%%", pct);
-        draw_text_buf(100, 0, buf);
+        // text
+        // int pct = (current_bat_status.level * 100) / 8;
+        // sprintf(buf, "%d%%", pct);
+        // draw_text_buf_right(0, buf);
+
+        // icon
+        render_battery(-1, 0);
     }
 
     lcd_flush();
@@ -1143,7 +1467,7 @@ void render_scanner(void)
 
 /**
  * @brief Render the info screen
- */
+ **/
 void render_info(void)
 {
     memset(m_frame_buffer, 0, 1024);
@@ -1167,7 +1491,7 @@ void render_info(void)
 /**
  * @brief Render the settings screen.
  * For now, only the LCD contrast
- */
+ **/
 void render_settings(void)
 {
     memset(m_frame_buffer, 0, 1024);
@@ -1190,7 +1514,7 @@ void render_settings(void)
  * @brief Render a single menu item line.
  * 
  * @param line Line number to render. -1 for header.
- */
+ **/
 void render_menu_item(int line)
 {
     if (line < 0) 
@@ -1217,7 +1541,7 @@ void render_menu_item(int line)
 /**
  * @brief Render the menu screen.
  * It does not act on buttons, just renders the current state.
- */
+ **/
 void render_menu(void)
 {
     bat_measure_update();
@@ -1236,12 +1560,7 @@ void render_menu(void)
     draw_text_buf(MENU_LEFT_X, y, buf);
 
     int x = MENU_LEFT_X + ((strlen(buf) + 1) * 6); // N chars width + 2 chars space
-    int h = 7;
-    // the battery
-    int wm = (2 * 8) + 2; // 2 pixels per level + 2 pixels border
-    draw_filled_bar(x, y, wm, h, current_bat_status.level, 8, false);
-    // tip of the battery
-    draw_box(x + wm, y+2, 2, h-4, false, true);
+    render_battery(x, y);
 
     // Menu Items
     for (int line = 0; line < MENU_ITEMS; line++)
@@ -1256,7 +1575,7 @@ void render_menu(void)
 /**
  * @brief Tell the user that the device goes to sleep, and then go to sleep.
  * This function does not return
- */
+ **/
 void render_goto_sleep(void)
 {
     memset(m_frame_buffer, 0, 1024);
@@ -1270,7 +1589,7 @@ void render_goto_sleep(void)
 /**
  * @brief Tell the user the device goes to DFU mode, and then reset to the DFU bootloader.
  * This function does not return.
- */
+ **/
 void render_goto_dfu(void)
 {
     memset(m_frame_buffer, 0, 1024);

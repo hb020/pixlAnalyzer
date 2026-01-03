@@ -22,10 +22,10 @@ https://aliexpress.com/item/1005008726926205.html
 
 2026-01-xx (WIP):
 
-* button debouncing
+* Button debouncing
 * LCD contrast adjustment made possible via menu
-* long press (5 seconds) to enter sleep mode
-* Frequency range visualisation: Give visual clues of the type of bands that exist. See [Frequency range and channels](#frequency-range-and-channels) below.
+* Long press (5 seconds) to enter sleep mode
+* Channel visualisation: Use the scroll wheel to select waterfall view or channel identification view, to give a better idea what the signals represent. It can show three different channel types: the IEEE 802.15.4 (Zigbee,..), 802.11b/g/n WiFi and BLE channels. See [Frequency range and channels](#frequency-range-and-channels) below. The chip is unfortunately incapable of filtering the different protocols, so its just a visual aid for now. Working on that...
 
 ## Flashing
 
@@ -150,6 +150,12 @@ The 2.4GHz ISM band is divided into several channels used by different protocols
 | 2487 |    |    |    |
 
 ![ISM band channels](ism_band_channels.png)
+
+In the screens below you can see it's use. It can help identifying BLE and 802.15.4 (eg: Zigbee) traffic.
+The lines represent the center frequencies, and the dotted lines the BLE advertising channels.
+
+![channels](channels.png)
+
 
 ## SDK links for the nRF52832
 
