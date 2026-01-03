@@ -34,7 +34,7 @@ Navigate to the Pixl.js firmware settings and enter the "Firmware Update" menu
 The device will reboot and show "DFU Update" now use the nRFConnect App to connect to the "Pixl DFU" device showing.
 Select the correct firmware update file "PixlAnalyzerLCD.zip" or "PixlAnalyzerOLED.zip" depending on your device and it will flash and reboot to the new Firmware.
 
-To Go back to the Pixl.js firmware you can open the menu by pressing the middle button, then navigate to "DFU" and flash the Stock firmware in the same way again.
+To Go back to the Pixl.js firmware you can open the menu by pressing the middle button, then navigate to "Firmware Update" and flash the Stock firmware in the same way again.
 
 ## Compiling
 

@@ -104,7 +104,7 @@ typedef enum
     STATE_SCANNER,
     STATE_MENU,
     STATE_INFO,
-    STATE_CONTRAST
+    STATE_SETTINGS
 } app_state_t;
 
 app_state_t current_state = STATE_SCANNER;
@@ -121,9 +121,9 @@ const char *menu_items[MENU_ITEMS] =
     "Back",
     "About",
     "Sleep",
-    "DFU mode",
+    "Firmware Update",
 #ifndef OLED_TYPE_SH1106    
-    "LCD Contrast"
+    "Settings"
 #endif
 };
 
@@ -538,7 +538,7 @@ void draw_boundingbox(int offset)
 /**
  * @brief Draw a filled bar
  * 
- * @param x left of bounding box
+ * @param x left of bounding box. If < 0, it is centered on screen
  * @param y top of bounding box
  * @param w width of bounding box
  * @param h height of bounding box
@@ -548,6 +548,8 @@ void draw_boundingbox(int offset)
  */
 void draw_filled_bar(int x, int y, int w, int h, int fill_level, int fill_max, bool spacer)
 {
+    if (x < 0)
+        x = (DISP_W - w) / 2;
     draw_box(x, y, w, h, false, true);
     
     // inside fill
@@ -1006,9 +1008,7 @@ void check_power_on_sequence(void)
         memset(m_frame_buffer, 0, 1024);
         draw_text_buf(25, 25, "HOLD TO START");
 
-        int w = 100;
-        int x = (DISP_W / 2) - (w / 2);
-        draw_filled_bar(x, 38, w, 8, i, 19, true);
+        draw_filled_bar(-1, 38, 100, 8, i, 19, true);
 
         lcd_flush();
         nrf_delay_ms(50);
@@ -1165,19 +1165,18 @@ void render_info(void)
 
 #ifndef OLED_TYPE_SH1106
 /**
- * @brief Render the contrast setting screen.
+ * @brief Render the settings screen.
+ * For now, only the LCD contrast
  */
-void render_contrast_setting(void)
+void render_settings(void)
 {
     memset(m_frame_buffer, 0, 1024);
 
     char buf[30];
     sprintf(buf, "Contrast: %d", m_contrast_level);
-    int x = (DISP_W - (strlen(buf) * 6)) / 2; // center text
-    draw_text_buf(x, 20, buf);
+    draw_text_buf_centered(20, buf);
 
-    x = (DISP_W - (MAX_CONTRAST + 2)) / 2;
-    draw_filled_bar(x, 30, MAX_CONTRAST + 2, 8, m_contrast_level, MAX_CONTRAST, false);
+    draw_filled_bar(-1, 30, MAX_CONTRAST + 2, 8, m_contrast_level, MAX_CONTRAST, false);
 
     lcd_flush();
 }
@@ -1393,7 +1392,7 @@ int main(void)
 #ifndef OLED_TYPE_SH1106
                 else if (menu_selection == 4)
                 {
-                    current_state = STATE_CONTRAST;
+                    current_state = STATE_SETTINGS;
                 }
 #endif                
             }
@@ -1410,9 +1409,9 @@ int main(void)
             }
         }
 #ifndef OLED_TYPE_SH1106        
-        else if (current_state == STATE_CONTRAST)
+        else if (current_state == STATE_SETTINGS)
         {
-            render_contrast_setting();
+            render_settings();
 
             if (btn_left(false))
             {
