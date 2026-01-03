@@ -1,6 +1,6 @@
 /**
  * Single File Spectrum Analyzer
- * Hardware: nrf52832, ST7565 LCD or SH1106 (CH1116) OLED, Radio
+ * Hardware: nrf52832, ST7565 LCD or SH1106 (CH1116) OLED, Radio, no PMIC
  * Updated: Added DFU Bootloader entry
  */
 
@@ -16,12 +16,18 @@
 #include "nrf_saadc.h"
 #include "boards.h"
 
+#pragma region Configuration & Pin Definitions
 // --------------------------------------------------------------------------
-// CONFIGURATION & PIN DEFINITIONS
+// Configuration & Pin Definitions
 // --------------------------------------------------------------------------
 
 // Select Display Type (Uncomment if SH1106 is used instead of ST7565)
+// This is set by the makefile
 // #define OLED_TYPE_SH1106
+
+#ifdef LCD_TYPE_DEFAULT
+#undef OLED_TYPE_SH1106
+#endif
 
 // debugging only: show FPS indicator
 #define SHOW_FPS_INDICATOR
@@ -42,6 +48,7 @@
 #define PIN_CHRG_STAT 3
 
 // Spectrum Analyzer Settings
+#define SCAN_BASE_FREQ 2400 // in MHz
 #define SCAN_START_FREQ 0
 #define SCAN_END_FREQ 87
 #define BANDWIDTH (SCAN_END_FREQ - SCAN_START_FREQ + 1)
@@ -62,8 +69,11 @@
 #define LCD_START_COL 0
 #endif
 
+#pragma endregion Configuration & Pin Definitions
+
+#pragma region Global Variables & Fonts
 // --------------------------------------------------------------------------
-// GLOBAL VARIABLES & FONTS
+// Global Variables & Fonts
 // --------------------------------------------------------------------------
 
 static uint8_t m_frame_buffer[1024];
@@ -124,8 +134,11 @@ int scanner_selection = 0;
 const uint8_t font5x7[][5] = {
     {0, 0, 0, 0, 0}, {0, 0, 95, 0, 0}, {0, 7, 0, 7, 0}, {20, 127, 20, 127, 20}, {36, 42, 127, 42, 18}, {35, 19, 8, 100, 98}, {54, 73, 85, 34, 80}, {0, 5, 3, 0, 0}, {0, 28, 34, 65, 0}, {0, 65, 34, 28, 0}, {20, 8, 62, 8, 20}, {8, 8, 62, 8, 8}, {0, 80, 48, 0, 0}, {8, 8, 8, 8, 8}, {0, 96, 96, 0, 0}, {32, 16, 8, 4, 2}, {62, 81, 73, 69, 62}, {0, 66, 127, 64, 0}, {66, 97, 81, 73, 70}, {33, 65, 69, 75, 49}, {24, 20, 18, 127, 16}, {39, 69, 69, 69, 57}, {60, 74, 73, 73, 48}, {1, 1, 113, 9, 7}, {54, 73, 73, 73, 54}, {6, 73, 73, 41, 30}, {0, 54, 54, 0, 0}, {0, 86, 54, 0, 0}, {8, 20, 34, 65, 0}, {20, 20, 20, 20, 20}, {0, 65, 34, 20, 8}, {2, 1, 81, 9, 6}, {50, 73, 121, 65, 62}, {126, 17, 17, 17, 126}, {127, 73, 73, 73, 54}, {62, 65, 65, 65, 34}, {127, 65, 65, 65, 62}, {127, 73, 73, 73, 65}, {127, 9, 9, 9, 1}, {62, 65, 73, 73, 58}, {127, 8, 8, 8, 127}, {0, 65, 127, 65, 0}, {32, 64, 65, 63, 1}, {127, 8, 20, 34, 65}, {127, 64, 64, 64, 64}, {127, 2, 12, 2, 127}, {127, 4, 8, 16, 127}, {62, 65, 65, 65, 62}, {127, 9, 9, 9, 6}, {62, 65, 81, 33, 94}, {127, 9, 25, 41, 70}, {70, 73, 73, 73, 49}, {1, 1, 127, 1, 1}, {63, 64, 64, 64, 63}, {31, 32, 64, 32, 31}, {63, 64, 56, 64, 63}, {99, 20, 8, 20, 99}, {7, 8, 112, 8, 7}, {97, 81, 73, 69, 67}, {0, 127, 65, 65, 0}, {2, 4, 8, 16, 32}, {0, 65, 65, 127, 0}, {4, 2, 1, 2, 4}, {64, 64, 64, 64, 64}, {0, 1, 2, 4, 0}, {32, 84, 84, 84, 120}, {127, 72, 68, 68, 56}, {56, 68, 68, 68, 32}, {56, 68, 68, 72, 127}, {56, 84, 84, 84, 24}, {8, 126, 9, 1, 2}, {12, 82, 82, 82, 62}, {127, 8, 4, 4, 120}, {0, 68, 125, 64, 0}, {32, 64, 68, 61, 0}, {127, 16, 40, 68, 0}, {0, 65, 127, 64, 0}, {124, 4, 24, 4, 120}, {124, 8, 4, 4, 120}, {56, 68, 68, 68, 56}, {124, 20, 20, 20, 8}, {8, 20, 20, 24, 124}, {124, 8, 4, 4, 8}, {72, 84, 84, 84, 32}, {4, 63, 68, 64, 32}, {60, 64, 64, 32, 124}, {28, 32, 64, 32, 28}, {60, 64, 48, 64, 60}, {68, 40, 16, 40, 68}, {12, 80, 80, 80, 60}, {68, 100, 84, 76, 68}};
 
+#pragma endregion Global Variables & Fonts
+
+#pragma region Low-Level Display Driver
 // --------------------------------------------------------------------------
-// LOW LEVEL LCD DRIVER
+// Low-Level Display Driver (OLED and LCD SPI communication)
 // --------------------------------------------------------------------------
 
 static void lcd_spi_byte(uint8_t data)
@@ -256,10 +269,13 @@ void lcd_set_contrast(uint8_t contrast)
 }
 #endif
 
+#pragma endregion Low-Level Display Driver
+
+#pragma region Settings
 // --------------------------------------------------------------------------
-// SETTINGS
-// --------------------------------------------------------------------------
+// Settings
 // Settings are stored in UICR CUSTOMER register 0 (0x10001080 .. 0x100010FC)
+// --------------------------------------------------------------------------
 
 typedef struct {
     uint8_t lcd_contrast : 7;
@@ -361,8 +377,11 @@ int32_t settings_save() {
     return 0;
 }
 
+#pragma endregion Settings
+
+#pragma region Graphic Primitives
 // --------------------------------------------------------------------------
-// GRAPHIC PRIMITIVES
+// Graphic Primitives
 // --------------------------------------------------------------------------
 
 void draw_pixel(int x, int y, bool on)
@@ -402,7 +421,32 @@ void draw_box(int x, int y, int w, int h, bool fill, bool color)
     }
 }
 
-void draw_filled_bar(int x, int y, int w, int h, int fill_level, int fill_max)
+
+/**
+ * @brief Draw a bounding box with given offset from the edges
+ * 
+ * @param offset offset from edge (0...DISP_W/2)
+ */
+void draw_boundingbox(int offset)
+{
+    if (offset < 0) offset = 0;
+    if (offset > DISP_W / 2) offset = DISP_W / 2;
+    draw_box(offset, offset, DISP_W - 2 * offset, DISP_H - 2 * offset, false, true);
+}
+
+
+/**
+ * @brief Draw a filled bar
+ * 
+ * @param x left of bounding box
+ * @param y top of bounding box
+ * @param w width of bounding box
+ * @param h height of bounding box
+ * @param fill_level fill level
+ * @param fill_max maximum fill level
+ * @param spacer if true, add 1 pixel empty space between border and fill
+ */
+void draw_filled_bar(int x, int y, int w, int h, int fill_level, int fill_max, bool spacer)
 {
     draw_box(x, y, w, h, false, true);
     
@@ -411,8 +455,12 @@ void draw_filled_bar(int x, int y, int w, int h, int fill_level, int fill_max)
     {
         if (fill_level > fill_max)
             fill_level = fill_max;
-        int wf = (fill_level * (w - 2)) / fill_max;
-        draw_box(x + 1, y + 1, wf, h - 2, true, true);
+        int offset = 1;
+        if (spacer)
+            offset = 2;
+
+        int wf = (fill_level * (w - 2 * offset)) / fill_max;
+        draw_box(x + offset, y + offset, wf, h - 2 * offset, true, true);
     }
 }
 
@@ -441,8 +489,19 @@ void draw_text_buf(int x, int y, const char *str)
     }
 }
 
+void draw_text_buf_centered(int y, const char *str)
+{
+    int len = strlen(str);
+    int total_width = len * 6; // 5 pixels + 1 pixel space
+    int start_x = (DISP_W - total_width) / 2;
+    draw_text_buf(start_x, y, str);
+}
+
+#pragma endregion Graphic Primitives
+
+#pragma region Buttons
 // --------------------------------------------------------------------------
-// HARDWARE / PERIPHERALS
+// Buttons
 // --------------------------------------------------------------------------
 // forward declaration
 uint32_t get_time_ms(void);
@@ -617,6 +676,19 @@ void buttons_init(void)
     btn_right(true); // initialize previous state
 }
 
+#pragma endregion Buttons
+
+#pragma region Power Management and Timer
+// --------------------------------------------------------------------------
+// Power Management and Timer
+// --------------------------------------------------------------------------
+
+
+/**
+ * @brief Enter deep sleep mode.
+ * This function will turn off the LCD, disable the radio, and configure the mid button to wake up the device.
+ * This function does not return.
+ */
 void enter_deep_sleep(void)
 {
     memset(m_frame_buffer, 0, 1024);
@@ -649,6 +721,13 @@ uint32_t get_time_ms(void)
     NRF_TIMER0->TASKS_CAPTURE[0] = 1;
     return (NRF_TIMER0->CC[0]) / 1000;
 }
+
+#pragma endregion Power Management and Timer
+
+#pragma region SAADC (Battery Measurement)
+// --------------------------------------------------------------------------
+// SAADC (Battery Measurement)
+// --------------------------------------------------------------------------
 
 void saadc_init_simple(void)
 {
@@ -716,7 +795,17 @@ void bat_measure_update(void)
     current_bat_status.level = level;
     current_bat_status.is_charging = (nrf_gpio_pin_read(PIN_CHRG_STAT) == 0);
 }
+#pragma endregion SAADC (Battery Measurement)
 
+#pragma region Radio Scanner
+// --------------------------------------------------------------------------
+// Radio Scanner
+// --------------------------------------------------------------------------
+
+
+/**
+ * @brief Initialize the radio for scanning
+ */
 void radio_init_scanner(void)
 {
     NRF_RADIO->TASKS_DISABLE = 1;
@@ -726,6 +815,11 @@ void radio_init_scanner(void)
     NRF_RADIO->MODE = (RADIO_MODE_MODE_Ble_1Mbit << RADIO_MODE_MODE_Pos);
 }
 
+
+/**
+ * @brief scans the radio.
+ * This function fills the `m_rssi_current[]` array with RSSI values for each frequency in the scan range.
+ */
 void scan_band(void)
 {
     if ((NRF_CLOCK->HFCLKSTAT & (CLOCK_HFCLKSTAT_SRC_Msk | CLOCK_HFCLKSTAT_STATE_Msk)) !=
@@ -757,46 +851,36 @@ void scan_band(void)
     }
 }
 
+#pragma endregion Radio Scanner
+
+#pragma region UI Functions
 // --------------------------------------------------------------------------
-// APPLICATION LOGIC
+// UI Functions
 // --------------------------------------------------------------------------
 
-#define WATERFALL_MINIMUM_VALUE 88
-
-void process_waterfall(void)
-{
-    for (int x = 0; x < DISP_W; x++)
-    {
-        int freq_idx = (x * BANDWIDTH) / DISP_W;
-        uint8_t val = m_rssi_current[freq_idx];
-        bool pixel_on = (val < WATERFALL_MINIMUM_VALUE); // this is a threshold for turning the pixel on
-        uint32_t col = (m_waterfall_data[x][3] << 24) | (m_waterfall_data[x][2] << 16) | (m_waterfall_data[x][1] << 8) | m_waterfall_data[x][0];
-        col <<= 1;
-        if (pixel_on)
-            col |= 1;
-        m_waterfall_data[x][0] = (col & 0xFF);
-        m_waterfall_data[x][1] = (col >> 8) & 0xFF;
-        m_waterfall_data[x][2] = (col >> 16) & 0xFF;
-        m_waterfall_data[x][3] = (col >> 24) & 0xFF;
-    }
-}
-
+/**
+ * @brief Show the boot "splash screen"
+ */
 void show_boot_screen(void)
 {
     memset(m_frame_buffer, 0, 1024);
 
-    draw_box(2, 2, 124, 60, false, true);
-    draw_box(4, 4, 120, 56, false, true);
+    draw_boundingbox(2);
+    draw_boundingbox(4);
 
-    draw_text_buf(46, 15, "2.4GHz");
-    draw_text_buf(40, 25, "SPECTRUM");
-    draw_text_buf(40, 35, "ANALYZER");
-    draw_text_buf(44, 45, "ATC1441");
+    draw_text_buf_centered(15, "2.4GHz");
+    draw_text_buf_centered(25, "SPECTRUM");
+    draw_text_buf_centered(35, "ANALYZER");
+    draw_text_buf_centered(45, "ATC1441");
 
     lcd_flush();
     nrf_delay_ms(1500);
 }
 
+
+/**
+ * @brief Startup screen sequence
+ */
 void check_power_on_sequence(void)
 {
 	// Sometimes not working so only activate in development or so
@@ -822,15 +906,45 @@ void check_power_on_sequence(void)
         memset(m_frame_buffer, 0, 1024);
         draw_text_buf(25, 25, "HOLD TO START");
 
-        draw_box(14, 38, 100, 8, false, true);
-        int fill = (i * 96) / 19;
-        draw_box(16, 40, fill, 4, true, true);
+        int w = 100;
+        int x = (DISP_W / 2) - (w / 2);
+        draw_filled_bar(x, 38, w, 8, i, 19, true);
 
         lcd_flush();
         nrf_delay_ms(50);
     }
 }
 
+
+/**
+ * @brief Process the waterfall data in the scanner view, by shifting down and adding new line.
+ * 
+ * To be called only by `render_scanner()`
+ */
+void process_scanner_waterfall(void)
+{
+#define WATERFALL_MINIMUM_VALUE 88
+
+    for (int x = 0; x < DISP_W; x++)
+    {
+        int freq_idx = (x * BANDWIDTH) / DISP_W;
+        uint8_t val = m_rssi_current[freq_idx];
+        bool pixel_on = (val < WATERFALL_MINIMUM_VALUE); // this is a threshold for turning the pixel on
+        uint32_t col = (m_waterfall_data[x][3] << 24) | (m_waterfall_data[x][2] << 16) | (m_waterfall_data[x][1] << 8) | m_waterfall_data[x][0];
+        col <<= 1;
+        if (pixel_on)
+            col |= 1;
+        m_waterfall_data[x][0] = (col & 0xFF);
+        m_waterfall_data[x][1] = (col >> 8) & 0xFF;
+        m_waterfall_data[x][2] = (col >> 16) & 0xFF;
+        m_waterfall_data[x][3] = (col >> 24) & 0xFF;
+    }
+}
+
+
+/**
+ * @brief Render the main scanner screen
+ */
 void render_scanner(void)
 {
     memset(m_frame_buffer, 0, 1024);
@@ -875,7 +989,7 @@ void render_scanner(void)
             draw_pixel(x, dot_y, true);
     }
 
-    process_waterfall();
+    process_scanner_waterfall();
 
     // Draw Waterfall (Bottom half)
     int start_page = WATERFALL_START / 8;
@@ -891,6 +1005,7 @@ void render_scanner(void)
     // Info Text
     char buf[20];
 #ifdef SHOW_FPS_INDICATOR
+    // show the FPS for debugging
     sprintf(buf, "%luhz", m_fps);
     draw_text_buf(0, 0, buf);
 #else
@@ -898,9 +1013,9 @@ void render_scanner(void)
     sprintf(buf, "%d", scanner_selection);
     draw_text_buf(0, 0, buf);
 #endif    
-    sprintf(buf, "%d", 2400 + SCAN_START_FREQ);
+    sprintf(buf, "%d", SCAN_BASE_FREQ + SCAN_START_FREQ);
     draw_text_buf(0, 56, buf);
-    sprintf(buf, "%d", 2400 + SCAN_END_FREQ);
+    sprintf(buf, "%d", SCAN_BASE_FREQ + SCAN_END_FREQ);
     draw_text_buf(100, 56, buf);
 
     // Battery Update (rarely)
@@ -925,12 +1040,16 @@ void render_scanner(void)
     lcd_flush();
 }
 
+
+/**
+ * @brief Render the info screen
+ */
 void render_info(void)
 {
     memset(m_frame_buffer, 0, 1024);
 
     // Border
-    draw_box(0, 0, 128, 64, false, true);
+    draw_boundingbox(0);
 
     draw_text_buf(4, 4, "Made by ATC1441");
 
@@ -945,6 +1064,9 @@ void render_info(void)
 }
 
 #ifndef OLED_TYPE_SH1106
+/**
+ * @brief Render the contrast setting screen.
+ */
 void render_contrast_setting(void)
 {
     memset(m_frame_buffer, 0, 1024);
@@ -955,20 +1077,27 @@ void render_contrast_setting(void)
     draw_text_buf(x, 20, buf);
 
     x = (DISP_W - (MAX_CONTRAST + 2)) / 2;
-    draw_filled_bar(x, 30, MAX_CONTRAST + 2, 8, m_contrast_level, MAX_CONTRAST);
+    draw_filled_bar(x, 30, MAX_CONTRAST + 2, 8, m_contrast_level, MAX_CONTRAST, false);
 
     lcd_flush();
 }
 #endif
 
+// The left alignment column for menu items
 #define MENU_LEFT_X 25
 
+
+/**
+ * @brief Render a single menu item line.
+ * 
+ * @param line Line number to render. -1 for header.
+ */
 void render_menu_item(int line)
 {
     if (line < 0) 
     {
         // this is the header
-        draw_text_buf(52, 3, "MENU");
+        draw_text_buf_centered(3, "MENU");
         return;
     }
 
@@ -985,12 +1114,17 @@ void render_menu_item(int line)
     draw_text_buf(x, y, text);
 }
 
+
+/**
+ * @brief Render the menu screen.
+ * It does not act on buttons, just renders the current state.
+ */
 void render_menu(void)
 {
     bat_measure_update();
     memset(m_frame_buffer, 0, 1024);
 
-    draw_box(0, 0, 128, 64, false, true);
+    draw_boundingbox(0);
 
     render_menu_item(-1); // header
 
@@ -1006,7 +1140,7 @@ void render_menu(void)
     int h = 7;
     // the battery
     int wm = (2 * 8) + 2; // 2 pixels per level + 2 pixels border
-    draw_filled_bar(x, y, wm, h, current_bat_status.level, 8);
+    draw_filled_bar(x, y, wm, h, current_bat_status.level, 8, false);
     // tip of the battery
     draw_box(x + wm, y+2, 2, h-4, false, true);
 
@@ -1019,17 +1153,42 @@ void render_menu(void)
     lcd_flush();
 }
 
-void render_goto_sleep_screen(void)
+
+/**
+ * @brief Tell the user that the device goes to sleep, and then go to sleep.
+ * This function does not return
+ */
+void render_goto_sleep(void)
 {
     memset(m_frame_buffer, 0, 1024);
-    draw_text_buf(40, 30, "GOODBYE");
+    draw_text_buf_centered(30, "GOODBYE");
     lcd_flush();
     nrf_delay_ms(1000);
-    enter_deep_sleep();
+    enter_deep_sleep(); // This function does not return
 }
 
+
+/**
+ * @brief Tell the user the device goes to DFU mode, and then reset to the DFU bootloader.
+ * This function does not return.
+ */
+void render_goto_dfu(void)
+{
+    memset(m_frame_buffer, 0, 1024);
+    draw_text_buf_centered(30, "ENTERING DFU...");
+    lcd_flush();
+    nrf_delay_ms(1000);
+
+    // Signal to bootloader to enter DFU mode
+    NRF_POWER->GPREGRET = BOOTLOADER_DFU_START;
+    NVIC_SystemReset(); // This function does not return
+}
+
+#pragma endregion UI Functions
+
+#pragma region Main Application
 // --------------------------------------------------------------------------
-// MAIN
+// Main Application
 // --------------------------------------------------------------------------
 
 int main(void)
@@ -1068,7 +1227,7 @@ int main(void)
         if (btn_mid(2))
         {
             // Long press to enter deep sleep from any state
-            render_goto_sleep_screen();
+            render_goto_sleep();
         }
         if (current_state == STATE_SCANNER)
         {
@@ -1125,19 +1284,11 @@ int main(void)
                 }
                 else if (menu_selection == 2)
                 {
-                    render_goto_sleep_screen();
+                    render_goto_sleep();
                 }
                 else if (menu_selection == 3)
                 {
-                    // DFU ENTRY
-                    memset(m_frame_buffer, 0, 1024);
-                    draw_text_buf(35, 30, "BOOTLOADER");
-                    lcd_flush();
-                    nrf_delay_ms(500);
-
-                    // Signal to bootloader to enter DFU mode
-                    NRF_POWER->GPREGRET = BOOTLOADER_DFU_START;
-                    NVIC_SystemReset();
+                    render_goto_dfu();
                 }
 #ifndef OLED_TYPE_SH1106
                 else if (menu_selection == 4)
@@ -1185,3 +1336,5 @@ int main(void)
 #endif
     }
 }
+
+#pragma endregion Main Application
