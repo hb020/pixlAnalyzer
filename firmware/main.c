@@ -106,22 +106,32 @@ const float lipo_voltage_map[] = {4.1, 3.98, 3.92, 3.87, 3.8, 3.7, 3.6, 3.5, 3.4
 
 typedef enum
 {
-    STATE_SCANNER,
+    STATE_SCANNER = 0,
     STATE_MENU,
     STATE_INFO,
     STATE_SETTINGS
 } app_state_t;
 
 app_state_t current_state = STATE_SCANNER;
-int menu_selection = 0;
-#ifdef OLED_TYPE_SH1106
-#define MENU_ITEMS 4
-#else
-#define MENU_ITEMS 5
+
+typedef enum {
+    MENU_BACK = 0,
+    MENU_ABOUT,
+    MENU_SLEEP,
+    MENU_FIRMWARE_UPDATE,
+#ifndef OLED_TYPE_SH1106
+    MENU_SETTINGS,
+#endif
+    NR_MENU_ITEMS // is not a menu entry, serves as maximum marker
+} menu_item_t;
+
+int menu_selection = 0; // int and not enum because I iterate
+
+#ifndef OLED_TYPE_SH1106
 static uint8_t m_contrast_level = 32;
 #endif
 
-const char *menu_items[MENU_ITEMS] =
+const char *menu_item_names[NR_MENU_ITEMS] =
 {
     "Back",
     "About",
@@ -132,14 +142,25 @@ const char *menu_items[MENU_ITEMS] =
 #endif
 };
 
-int scanner_selection = 0;
-#define SCANNER_MODES 4
-const char *scanner_mode_names[SCANNER_MODES] =
+typedef enum
+{
+    SCAN_MODE_FREQUENCY = 0,
+    SCAN_MODE_802_15_4,
+    SCAN_MODE_802_11,
+    SCAN_MODE_BLE,
+    SCAN_X1,
+    SCAN_X2,
+    SCAN_X3,
+    NR_SCANNER_MODES // is not a scanner mode, serves as maximum marker
+} scanner_mode_t;
+
+int scanner_selection = 0; // int and not enum because I iterate
+const char *scanner_mode_names[NR_SCANNER_MODES] =
 {
     "Freq",
     "802.15.4",
-    "WiFi B/G/N",
-    "BLE"
+    "802.11b/g/n",
+    "BLE",
 };
 
 #define FONT_START 32
@@ -241,7 +262,7 @@ const char font5x7[FONT_END - FONT_START + 1][5] = {
     {0x00, 0x00, 0x7F, 0x00, 0x00}, // '|'
     {0x00, 0x41, 0x36, 0x08, 0x00}, // '}'
     {0x10, 0x08, 0x08, 0x10, 0x08}, // '~'
-    {0x00, 0x7F, 0x3E, 0x1C, 0x08}, // '►', as 0x7F
+    {0x00, 0x7F, 0x3E, 0x1C, 0x08}  // '►', as 0x7F
 };
 // I repeat the FONT_END - FONT_START in the definition, as that makes the compiler check the size
 
@@ -653,6 +674,7 @@ void draw_nr_vertical(int x, int y, int nr)
 void draw_text_buf_centered(int y, const char *str)
 {
     int len = strlen(str);
+    if (len == 0) return;
     int total_width = len * 6; // 5 pixels + 1 pixel space
     int start_x = (DISP_W - total_width) / 2;
     draw_text_buf(start_x, y, str);
@@ -988,6 +1010,7 @@ void bat_measure_update(void)
 // Radio Scanner
 // --------------------------------------------------------------------------
 
+void sniffer_init(void); // forward declaration
 
 /**
  * @brief Initialize the radio for scanning
@@ -999,6 +1022,8 @@ void radio_init_scanner(void)
         ;
     NRF_RADIO->POWER = 1;
     NRF_RADIO->MODE = (RADIO_MODE_MODE_Ble_1Mbit << RADIO_MODE_MODE_Pos);
+
+    sniffer_init();
 }
 
 
@@ -1138,23 +1163,271 @@ const int8_t freq_to_channel_map[BANDWIDTH][3] = {
  * @brief Convert frequency to channel number for given mode
  * 
  * @param freq Frequency in MHz, already offset by SCAN_BASE_FREQ
- * @param mode 1 = IEEE 802.15.4, 2 = WiFi 802.11b/g/n, 3 = BLE
+ * @param mode SCAN_MODE_802_15_4, SCAN_MODE_802_11, SCAN_MODE_BLE
  * @return int Channel number, or -1 if not a valid channel for that mode
  **/
 int freq_to_channel(int freq, int mode)
 {
-    if (mode < 1 || mode > 3)
+    // translate SCAN_MODE_802_15_4, SCAN_MODE_802_11, SCAN_MODE_BLE to 0..2
+    mode -= 1;
+    if (mode < 0 || mode > 2)
         return -1;
     if (freq < SCAN_START_FREQ || freq > SCAN_END_FREQ)
         return -1;
-    return freq_to_channel_map[freq - SCAN_START_FREQ][mode - 1];
+    return freq_to_channel_map[freq - SCAN_START_FREQ][mode];
+}
+
+/**
+ * @brief Packet type enumeration
+ **/
+typedef enum {
+    PACKET_TYPE_NONE = 0,
+    PACKET_TYPE_802_15_4,
+    PACKET_TYPE_802_11,
+    PACKET_TYPE_BLE,
+    PACKET_TYPE_TIMEOUT,
+    PACKET_TYPE_UNKNOWN
+} packet_type_t;
+
+/**
+ * @brief Receive a packet from the radio in promiscuous mode and detect packet type
+ * 
+ * @param frequency Frequency to listen on (offset from SCAN_BASE_FREQ)
+ * @param buffer Buffer to store received packet (minimum 255 bytes recommended)
+ * @param buffer_size Size of the buffer
+ * @param timeout_ms Timeout in milliseconds (0 = no timeout)
+ * @return packet_type_t Type of packet detected, or PACKET_TYPE_NONE if no packet
+ **/
+packet_type_t radio_receive_packet_promiscuous(uint8_t frequency, uint8_t *buffer, uint8_t buffer_size, uint32_t timeout_ms)
+{
+    if (buffer == NULL || buffer_size < 10)
+        return PACKET_TYPE_NONE;
+
+    memset(buffer, 0, buffer_size);
+
+    // Ensure HFCLK is running
+    if ((NRF_CLOCK->HFCLKSTAT & (CLOCK_HFCLKSTAT_SRC_Msk | CLOCK_HFCLKSTAT_STATE_Msk)) !=
+        (CLOCK_HFCLKSTAT_SRC_Xtal << CLOCK_HFCLKSTAT_SRC_Pos | CLOCK_HFCLKSTAT_STATE_Running << CLOCK_HFCLKSTAT_STATE_Pos))
+    {
+        NRF_CLOCK->TASKS_HFCLKSTART = 1;
+        while ((NRF_CLOCK->HFCLKSTAT & CLOCK_HFCLKSTAT_STATE_Msk) == 0)
+            ;
+    }
+
+    // Set frequency
+    NRF_RADIO->FREQUENCY = frequency;
+    
+    // Configure radio for promiscuous mode (BLE 1Mbit as base)
+    NRF_RADIO->MODE = (RADIO_MODE_MODE_Ble_1Mbit << RADIO_MODE_MODE_Pos);
+    NRF_RADIO->PCNF0 = 0; // No length field initially
+    NRF_RADIO->PCNF1 = (RADIO_PCNF1_WHITEEN_Disabled << RADIO_PCNF1_WHITEEN_Pos) |
+                       (RADIO_PCNF1_ENDIAN_Big       << RADIO_PCNF1_ENDIAN_Pos)  |
+                       (4 << RADIO_PCNF1_BALEN_Pos)   |
+                       (1 << RADIO_PCNF1_STATLEN_Pos) |
+                       (buffer_size << RADIO_PCNF1_MAXLEN_Pos);                       
+    NRF_RADIO->CRCCNF = 0; // No CRC checking
+    NRF_RADIO->DACNF = 0; // No address matching
+    NRF_RADIO->RXADDRESSES = 0x01; // Use logical address 0
+    
+    // Set packet pointer
+    NRF_RADIO->PACKETPTR = (uint32_t)buffer;
+    
+    // Clear events and start RX
+    NRF_RADIO->EVENTS_READY = 0;
+    NRF_RADIO->EVENTS_END = 0;
+    NRF_RADIO->EVENTS_ADDRESS = 0;
+    NRF_RADIO->TASKS_RXEN = 1;
+    
+    // Wait for radio ready
+    while (NRF_RADIO->EVENTS_READY == 0)
+        ;
+    
+    // Start listening
+    NRF_RADIO->EVENTS_READY = 0;
+    NRF_RADIO->EVENTS_ADDRESS = 0;
+    NRF_RADIO->EVENTS_PAYLOAD = 0;
+    NRF_RADIO->EVENTS_END = 0;
+    NRF_RADIO->EVENTS_DISABLED = 0;
+    NRF_RADIO->EVENTS_DEVMATCH = 0;
+    NRF_RADIO->EVENTS_DEVMISS = 0;
+    NRF_RADIO->EVENTS_RSSIEND = 0;
+    NRF_RADIO->EVENTS_BCMATCH = 0;
+    NRF_RADIO->EVENTS_CRCOK = 0;
+    NRF_RADIO->EVENTS_CRCERROR = 0;
+    NRF_RADIO->TASKS_START = 1;
+    
+    // Wait for packet or timeout
+    uint32_t start_time = get_time_ms();
+    while (NRF_RADIO->EVENTS_END == 0)
+    {
+        if (timeout_ms > 0 && (get_time_ms() - start_time) >= timeout_ms)
+        {
+            // Timeout - disable radio and return
+            memset(buffer, 0x0, buffer_size);
+            buffer[0] = 0xff; // indicate no data
+            uint8_t status = 0;
+            if (NRF_RADIO->EVENTS_READY) status |= 0x01;
+            if (NRF_RADIO->EVENTS_ADDRESS) status |= 0x02;
+            if (NRF_RADIO->EVENTS_PAYLOAD) status |= 0x04;
+            if (NRF_RADIO->EVENTS_END) status |= 0x08;
+            if (NRF_RADIO->EVENTS_DISABLED) status |= 0x10;
+            if (NRF_RADIO->EVENTS_DEVMATCH) status |= 0x20;
+            if (NRF_RADIO->EVENTS_DEVMISS) status |= 0x40;
+            buffer[1] = status;
+            status = 0;
+            if (NRF_RADIO->EVENTS_RSSIEND) status |= 0x01;
+            if (NRF_RADIO->EVENTS_BCMATCH) status |= 0x02;
+            if (NRF_RADIO->EVENTS_CRCOK) status |= 0x04;
+            if (NRF_RADIO->EVENTS_CRCERROR) status |= 0x08;
+            buffer[2] = status;
+            buffer[3] = NRF_RADIO->MODE & 0x0F;
+            buffer[4] = NRF_RADIO->STATE & 0x0F;
+            buffer[5] = NRF_RADIO->POWER & 0x01;
+            buffer[6] = NRF_RADIO->RSSISAMPLE;
+
+            NRF_RADIO->EVENTS_DISABLED = 0;
+            NRF_RADIO->TASKS_DISABLE = 1;
+            while (NRF_RADIO->EVENTS_DISABLED == 0)
+                ;
+            return PACKET_TYPE_TIMEOUT;
+        }
+    }
+    
+    // debug
+    // buffer[0] = 0xAA; // indicate some data
+    // uint8_t status = 0;
+    // if (NRF_RADIO->EVENTS_READY) status |= 0x01;
+    // if (NRF_RADIO->EVENTS_ADDRESS) status |= 0x02;
+    // if (NRF_RADIO->EVENTS_PAYLOAD) status |= 0x04;
+    // if (NRF_RADIO->EVENTS_END) status |= 0x08;
+    // if (NRF_RADIO->EVENTS_DISABLED) status |= 0x10;
+    // if (NRF_RADIO->EVENTS_DEVMATCH) status |= 0x20;
+    // if (NRF_RADIO->EVENTS_DEVMISS) status |= 0x40;
+    // buffer[1] = status;
+    // status = 0;
+    // if (NRF_RADIO->EVENTS_RSSIEND) status |= 0x01;
+    // if (NRF_RADIO->EVENTS_BCMATCH) status |= 0x02;
+    // if (NRF_RADIO->EVENTS_CRCOK) status |= 0x04;
+    // if (NRF_RADIO->EVENTS_CRCERROR) status |= 0x08;
+    // buffer[2] = status;
+    // buffer[3] = NRF_RADIO->MODE & 0x0F;
+    // buffer[4] = NRF_RADIO->STATE & 0x0F;
+    // buffer[5] = NRF_RADIO->POWER & 0x01;
+    // buffer[6] = NRF_RADIO->RSSISAMPLE;
+    // return PACKET_TYPE_802_11;
+
+    // TODO: this doesn't work. 
+    // 1) the returned data is only 1 byte (probably RADIO_PCNF1_STATLEN)
+    // 2) I cannot get it to work with other protocols than BLE
+    // 3) not checked lately, but when I set RXADDRESSES to 0, I only get timeouts.
+
+    // debug other style
+    buffer[0] = 0xAA; // indicate some data
+    uint8_t status = 0;
+    if (NRF_RADIO->EVENTS_READY) status |= 0x01;
+    if (NRF_RADIO->EVENTS_ADDRESS) status |= 0x02;
+    if (NRF_RADIO->EVENTS_PAYLOAD) status |= 0x04;
+    if (NRF_RADIO->EVENTS_END) status |= 0x08;
+    if (NRF_RADIO->EVENTS_DISABLED) status |= 0x10;
+    if (NRF_RADIO->EVENTS_DEVMATCH) status |= 0x20;
+    if (NRF_RADIO->EVENTS_DEVMISS) status |= 0x40;
+    buffer[1] = status;
+    status = 0;
+    if (NRF_RADIO->EVENTS_RSSIEND) status |= 0x01;
+    if (NRF_RADIO->EVENTS_BCMATCH) status |= 0x02;
+    if (NRF_RADIO->EVENTS_CRCOK) status |= 0x04;
+    if (NRF_RADIO->EVENTS_CRCERROR) status |= 0x08;
+    buffer[2] = status;
+    buffer[3] = NRF_RADIO->PCNF0 & 0xFF;
+    buffer[4] = NRF_RADIO->DAI & 0xFF;
+    buffer[5] = NRF_RADIO->RXMATCH & 0xFF;
+    return PACKET_TYPE_802_11;    
+
+
+    
+    // Analyze packet to determine type
+    // BLE packets typically start with:
+    // - Access Address (4 bytes): 0x8E89BED6 for advertising channels, or connection-specific
+    // - PDU Header (1-2 bytes)
+    
+    // WiFi 802.11 packets start with:
+    // - Frame Control (2 bytes): type/subtype in first byte
+    // - Duration/ID (2 bytes)
+    
+    // Check for BLE advertising channel access address
+    if (buffer_size >= 4)
+    {
+        uint32_t access_addr = (buffer[3] << 24) | (buffer[2] << 16) | (buffer[1] << 8) | buffer[0];
+        if (access_addr == 0x8E89BED6)
+        {
+            return PACKET_TYPE_BLE;
+        }
+        
+        // Check for BLE data channel (randomized access address, but check PDU structure)
+        if (buffer_size >= 6)
+        {
+            uint8_t pdu_type = buffer[4] & 0x0F; // Lower 4 bits of PDU header
+            if (pdu_type <= 0x0F) // Valid BLE PDU types
+            {
+                // Additional heuristic: BLE packets have specific length patterns
+                uint8_t length = buffer[5] & 0x1F; // Length field in PDU header
+                if (length <= 37) // Max advertising PDU payload
+                {
+                    return PACKET_TYPE_BLE;
+                }
+            }
+        }
+    }
+    
+    // Check for WiFi Frame Control pattern
+    if (buffer_size >= 2)
+    {
+        uint8_t frame_control = buffer[0];
+        uint8_t protocol_version = frame_control & 0x03;
+        uint8_t frame_type = (frame_control >> 2) & 0x03;
+        
+        // WiFi uses protocol version 0
+        if (protocol_version == 0)
+        {
+            // Frame types: 0=Management, 1=Control, 2=Data
+            if (frame_type <= 2)
+            {
+                return PACKET_TYPE_802_11;
+            }
+        }
+    }
+    
+    // Check for IEEE 802.15.4 / ZigBee pattern
+    if (buffer_size >= 2)
+    {
+        uint8_t frame_control = buffer[0];
+        uint8_t frame_type = frame_control & 0x07; // Lower 3 bits
+        
+        // 802.15.4 frame types: 0=Beacon, 1=Data, 2=Ack, 3=MAC command
+        if (frame_type <= 3)
+        {
+            // Check if security enabled bit and other flags make sense
+            bool security = (frame_control & 0x08) != 0;
+            bool frame_pending = (frame_control & 0x10) != 0;
+            bool ack_request = (frame_control & 0x20) != 0;
+            
+            // These patterns are common in 802.15.4
+            if (buffer_size >= 3)
+            {
+                // Sequence number should be present
+                return PACKET_TYPE_802_15_4;
+            }
+        }
+    }
+    
+    return PACKET_TYPE_UNKNOWN;
 }
 
 #pragma endregion Radio Scanner
 
-#pragma region UI Functions
+#pragma region UI Functions - rendering
 // --------------------------------------------------------------------------
-// UI Functions
+// UI Functions - rendering
 // --------------------------------------------------------------------------
 
 /**
@@ -1218,7 +1491,7 @@ void check_power_on_sequence(void)
  * @param x The x-coordinate for the battery icon. Use -1 for right aligned.
  * @param y The y-coordinate for the battery icon.
  */
-void render_battery(int x, int y)
+void render_battery_icon(int x, int y)
 {
     int h = 7;
     // the battery
@@ -1228,6 +1501,40 @@ void render_battery(int x, int y)
     draw_filled_bar(x, y, wm, h, current_bat_status.level, 8, false);
     // tip of the battery
     draw_box(x + wm, y+2, 2, h-4, false, true);
+}
+
+
+/**
+ * @brief Measure the battery and render the battery status, top right on the screen. 
+ */
+void render_battery(void)
+{
+    char buf[10];
+    // Battery Update (rarely)
+    static int batt_ctr = 0;
+    if (batt_ctr == 0)
+    {
+        bat_measure_update();
+    }
+    if (batt_ctr++ > 60)
+    {
+        batt_ctr = 0;
+    }
+
+    if (current_bat_status.is_charging)
+    {
+        draw_text_buf_right(0, "CHRG");
+    }
+    else
+    {
+        // text
+        // int pct = (current_bat_status.level * 100) / 8;
+        // sprintf(buf, "%d%%", pct);
+        // draw_text_buf_right(0, buf);
+
+        // icon
+        render_battery_icon(-1, 0);
+    }
 }
 
 
@@ -1296,7 +1603,7 @@ void render_scanner_waterfall(void)
  * @brief Render the channel markers
  * 
  * To be called only by `render_scanner()`
- * @param mode 1 = IEEE 802.15.4, 2 = WiFi 802.11b/g/n, 3 = BLE
+ * @param mode SCAN_MODE_802_15_4, SCAN_MODE_802_11, SCAN_MODE_BLE
  **/
 void render_scanner_channels(int mode) 
 {
@@ -1413,10 +1720,20 @@ void render_scanner(void)
 
     process_scanner_waterfall();
 
-    if (scanner_selection == 0)
-        render_scanner_waterfall();
-    else
-        render_scanner_channels(scanner_selection); // for now, same waterfall for all modes
+    switch (scanner_selection)
+    {
+        case SCAN_MODE_FREQUENCY:
+            render_scanner_waterfall();
+            break;
+        case SCAN_MODE_802_15_4:
+        case SCAN_MODE_802_11:
+        case SCAN_MODE_BLE:
+            render_scanner_channels(scanner_selection);
+            break;
+        default:
+            draw_text_buf_centered(0, "UNKNOWN MODE");
+            break;
+    }
 
     // Info Text
     char buf[40];
@@ -1438,32 +1755,95 @@ void render_scanner(void)
         draw_text_buf_right(56, buf);
     }
 
-    // Battery Update (rarely)
-    static int batt_ctr = 0;
-    if (batt_ctr++ > 60)
-    {
-        bat_measure_update();
-        batt_ctr = 0;
-    }
-
-    if (current_bat_status.is_charging)
-    {
-        draw_text_buf_right(0, "CHRG");
-    }
-    else
-    {
-        // text
-        // int pct = (current_bat_status.level * 100) / 8;
-        // sprintf(buf, "%d%%", pct);
-        // draw_text_buf_right(0, buf);
-
-        // icon
-        render_battery(-1, 0);
-    }
+    // Battery Status
+    render_battery();
 
     lcd_flush();
 }
 
+#define SNIFF_HISTORY_LENGTH 5
+#define SNIFF_DATA_LENGTH 7
+static uint8_t m_sniffed_data[SNIFF_HISTORY_LENGTH][SNIFF_DATA_LENGTH];
+static uint8_t m_sniffed_status[SNIFF_HISTORY_LENGTH];
+
+void sniffer_init(void)
+{
+    memset(m_sniffed_data, 0, sizeof(m_sniffed_data));
+    memset(m_sniffed_status, 0, sizeof(m_sniffed_status));
+}
+
+void render_sniffer(void)
+{
+    memset(m_frame_buffer, 0, 1024);
+    draw_text_buf_centered(0, "SNIFFER MODE");
+
+    int frequency;
+    switch (scanner_selection)
+    {
+        case SCAN_X1:
+            frequency = 2;
+            break;
+        case SCAN_X2:
+            frequency = 5;
+            break;
+        default:
+            frequency = 37;
+            break;
+    }
+
+    static int progress = 0;
+    progress++;
+    progress = (progress > 3) ? 0 : progress;
+    char spinner_char;
+    switch (progress)
+    {
+        case 0:
+            spinner_char = '|';
+            break;
+        case 1:
+            spinner_char = '/';
+            break;
+        case 2:
+            spinner_char = '-';
+            break;
+        case 3:
+            spinner_char = '\\';
+            break;
+    }
+    char buf[40];
+    sprintf(buf, "Freq: %d MHz  %c", SCAN_BASE_FREQ + frequency, spinner_char);
+    draw_text_buf_centered(8, buf);
+
+    // Receive packet
+    uint8_t packet_buffer[100];
+    packet_type_t pkt_type = radio_receive_packet_promiscuous(frequency, packet_buffer, sizeof(packet_buffer), 500);
+//    if (pkt_type != PACKET_TYPE_NONE)
+//    {
+        // Shift previous data
+        for (int i = SNIFF_HISTORY_LENGTH - 1; i > 0; i--)
+        {
+            memcpy(m_sniffed_data[i], m_sniffed_data[i - 1], SNIFF_DATA_LENGTH);
+            m_sniffed_status[i] = m_sniffed_status[i - 1];
+        }
+        memcpy(m_sniffed_data[0], packet_buffer, SNIFF_DATA_LENGTH);
+        m_sniffed_status[0] = (uint8_t)pkt_type;
+//    }
+    // Render sniffed data
+    for (int i = 0; i < SNIFF_HISTORY_LENGTH; i++)
+    {
+        char buf[40];
+        sprintf(buf, "%d: %02x %02x %02x %02x %02x %02x", m_sniffed_status[i], m_sniffed_data[i][0], m_sniffed_data[i][1], m_sniffed_data[i][2], m_sniffed_data[i][3], m_sniffed_data[i][4], m_sniffed_data[i][5]);
+        draw_text_buf_centered(20 + (i * 8), buf);
+    }
+
+    render_battery();
+    lcd_flush();
+    if (pkt_type != PACKET_TYPE_TIMEOUT)
+    {
+        // add a small sleep
+        nrf_delay_ms(150);        
+    }    
+}
 
 /**
  * @brief Render the info screen
@@ -1524,7 +1904,7 @@ void render_menu_item(int line)
         return;
     }
 
-    if (line > MENU_ITEMS - 1)
+    if (line > NR_MENU_ITEMS - 1)
         return; // out of range
     
     int x = MENU_LEFT_X;
@@ -1533,7 +1913,7 @@ void render_menu_item(int line)
     {
         draw_char_buf(x - 10, y, 0x7F); // '►' character
     }
-    const char *text = menu_items[line];
+    const char *text = menu_item_names[line];
     draw_text_buf(x, y, text);
 }
 
@@ -1560,10 +1940,10 @@ void render_menu(void)
     draw_text_buf(MENU_LEFT_X, y, buf);
 
     int x = MENU_LEFT_X + ((strlen(buf) + 1) * 6); // N chars width + 2 chars space
-    render_battery(x, y);
+    render_battery_icon(x, y);
 
     // Menu Items
-    for (int line = 0; line < MENU_ITEMS; line++)
+    for (int line = 0; line < NR_MENU_ITEMS; line++)
     {
         render_menu_item(line);
     }
@@ -1602,7 +1982,154 @@ void render_goto_dfu(void)
     NVIC_SystemReset(); // This function does not return
 }
 
-#pragma endregion UI Functions
+#pragma endregion UI Functions - rendering
+
+#pragma region UI Functions - interacting
+// --------------------------------------------------------------------------
+// UI Functions - interacting
+// --------------------------------------------------------------------------
+
+/**
+ * @brief handles the sniffer interactions 
+ */
+void handle_sniffer(void)
+{
+    render_sniffer();
+    // TODO: buttons
+}
+
+
+/**
+ * @brief handles the scanner interactions
+ */
+void handle_scanner(void)
+{
+    if (scanner_selection >= SCAN_X1)
+    {
+        handle_sniffer();
+    }
+    else
+    {
+        scan_band();
+        render_scanner();
+    }
+
+    // Interaction
+    if (btn_mid(0))
+    {
+        current_state = STATE_MENU;
+        menu_selection = MENU_BACK; // Reset selection on entry
+    }
+    if (btn_left(false)) scanner_selection--;
+    if (btn_right(false)) scanner_selection++;
+    // wrap around scanner mode selections
+    if (scanner_selection < 0)
+        scanner_selection = NR_SCANNER_MODES - 1;
+    if (scanner_selection > NR_SCANNER_MODES - 1)
+        scanner_selection = 0;
+
+#ifdef SHOW_FPS_INDICATOR
+    // FPS Counter
+    m_frame_count++;
+    uint32_t now = get_time_ms();
+    if (now - m_last_time >= 1000)
+    {
+        m_fps = m_frame_count;
+        m_frame_count = 0;
+        m_last_time = now;
+    }
+#endif         
+}
+
+/**
+ * @brief Handle the menu interactions
+ **/
+void handle_menu(void)
+{
+    render_menu();
+
+    if (btn_left(false)) menu_selection--;
+    if (btn_right(false)) menu_selection++;
+    // wrap around menu selection
+    if (menu_selection < 0)
+        menu_selection = NR_MENU_ITEMS - 1;
+    if (menu_selection > NR_MENU_ITEMS - 1)
+        menu_selection = 0;
+
+    if (btn_mid(0))
+    {
+        switch (menu_selection)
+        {
+            case MENU_BACK:
+                current_state = STATE_SCANNER;
+                break;
+            case MENU_ABOUT:
+                current_state = STATE_INFO;
+                break;
+            case MENU_SLEEP:
+                render_goto_sleep(); // this halts the program (in a deep sleep mode)
+                break;
+            case MENU_FIRMWARE_UPDATE:
+                render_goto_dfu(); // this exits to a bootloader
+                break;
+#ifndef OLED_TYPE_SH1106
+            case MENU_SETTINGS:
+                current_state = STATE_SETTINGS;
+                break;
+#endif
+            default:
+                // do nothing
+                break;
+        }
+    }
+    nrf_delay_ms(150);
+}
+
+
+/**
+ * @brief Handle the "About" screen interactions
+ */
+void handle_info(void)
+{
+    render_info();
+    // Press any key to go back
+    if (btn_mid(0) || btn_left(false) || btn_right(false))
+    {
+        current_state = STATE_MENU;
+        nrf_delay_ms(150);
+    }
+}
+
+#ifndef OLED_TYPE_SH1106 
+/**
+ * @brief Handles the Settings interactions
+ */
+void handle_settings(void)
+{
+    render_settings();
+
+    if (btn_left(false))
+    {
+        if (m_contrast_level > 0)
+            m_contrast_level--;
+        lcd_set_contrast(m_contrast_level);
+    }
+    if (btn_right(false))
+    {
+        if (m_contrast_level < MAX_CONTRAST)
+            m_contrast_level++;
+        lcd_set_contrast(m_contrast_level);
+    }
+    if (btn_mid(0))
+    {
+        current_state = STATE_MENU;
+        settings_save(); // will check if changes are needed to be persisted
+        nrf_delay_ms(150);
+    }
+}
+#endif
+
+#pragma endregion UI Functions - interacting
 
 #pragma region Main Application
 // --------------------------------------------------------------------------
@@ -1647,111 +2174,26 @@ int main(void)
             // Long press to enter deep sleep from any state
             render_goto_sleep();
         }
-        if (current_state == STATE_SCANNER)
+        switch (current_state)
         {
-            scan_band();
-            render_scanner();
-
-            // Interaction
-            if (btn_mid(0))
-            {
-                current_state = STATE_MENU;
-                menu_selection = 0; // Reset selection on entry
-            }
-            if (btn_left(false)) scanner_selection--;
-            if (btn_right(false)) scanner_selection++;
-            // wrap around scanner mode selections
-            if (scanner_selection < 0)
-                scanner_selection = SCANNER_MODES - 1;
-            if (scanner_selection > SCANNER_MODES - 1)
-                scanner_selection = 0;
-
-#ifdef SHOW_FPS_INDICATOR
-            // FPS Counter
-            m_frame_count++;
-            uint32_t now = get_time_ms();
-            if (now - m_last_time >= 1000)
-            {
-                m_fps = m_frame_count;
-                m_frame_count = 0;
-                m_last_time = now;
-            }
-#endif            
-        }
-        else if (current_state == STATE_MENU)
-        {
-            render_menu();
-
-            if (btn_left(false)) menu_selection--;
-            if (btn_right(false)) menu_selection++;
-            // wrap around menu selection
-            if (menu_selection < 0)
-                menu_selection = MENU_ITEMS - 1;
-            if (menu_selection > MENU_ITEMS - 1)
-                menu_selection = 0;
-        
-            if (btn_mid(0))
-            {
-                if (menu_selection == 0)
-                {
-                    current_state = STATE_SCANNER;
-                }
-                else if (menu_selection == 1)
-                {
-                    current_state = STATE_INFO;
-                }
-                else if (menu_selection == 2)
-                {
-                    render_goto_sleep();
-                }
-                else if (menu_selection == 3)
-                {
-                    render_goto_dfu();
-                }
-#ifndef OLED_TYPE_SH1106
-                else if (menu_selection == 4)
-                {
-                    current_state = STATE_SETTINGS;
-                }
-#endif                
-            }
-            nrf_delay_ms(150);
-        }
-        else if (current_state == STATE_INFO)
-        {
-            render_info();
-            // Press any key to go back
-            if (btn_mid(0) || btn_left(false) || btn_right(false))
-            {
-                current_state = STATE_MENU;
-                nrf_delay_ms(150);
-            }
-        }
+            case STATE_SCANNER:
+                handle_scanner();
+                break;
+            case STATE_MENU:
+                handle_menu();
+                break;
+            case STATE_INFO:
+                handle_info();
+                break;
 #ifndef OLED_TYPE_SH1106        
-        else if (current_state == STATE_SETTINGS)
-        {
-            render_settings();
-
-            if (btn_left(false))
-            {
-                if (m_contrast_level > 0)
-                    m_contrast_level--;
-                lcd_set_contrast(m_contrast_level);
-            }
-            if (btn_right(false))
-            {
-                if (m_contrast_level < MAX_CONTRAST)
-                    m_contrast_level++;
-                lcd_set_contrast(m_contrast_level);
-            }
-            if (btn_mid(0))
-            {
-                current_state = STATE_MENU;
-                settings_save(); // will check if changes are needed to be persisted
-                nrf_delay_ms(150);
-            }
-        }
+            case STATE_SETTINGS:
+                handle_settings();
+                break;
 #endif
+            default:
+                current_state = STATE_SCANNER;
+                break;
+        }
     }
 }
 
